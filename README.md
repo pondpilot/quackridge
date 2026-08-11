@@ -15,7 +15,7 @@ supported until its native smoke test has passed.
 
 ## Development
 
-QuackRidge requires Go 1.25 or newer, CGO, and platform build tools.
+QuackRidge requires Go 1.26 or newer, CGO, and platform build tools.
 
 ```sh
 make check

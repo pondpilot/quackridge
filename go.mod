@@ -1,6 +1,6 @@
 module github.com/pondpilot/quackridge
 
-go 1.25.0
+go 1.26.0
 
 require github.com/duckdb/duckdb-go/v2 v2.10505.0
 
