@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/extensions/
+*.duckdb
+*.duckdb.wal
+*.test
+.env
+.DS_Store
