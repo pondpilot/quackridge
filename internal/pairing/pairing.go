@@ -13,18 +13,10 @@ import (
 	"sync"
 	"time"
 
-	quackridge "github.com/pondpilot/quackridge"
+	protocol "github.com/pondpilot/quackridge/protocol/v1"
 )
 
-type Identity struct {
-	Product         string   `json:"product"`
-	ProductVersion  string   `json:"product_version"`
-	ProtocolVersion int      `json:"protocol_version"`
-	MetadataVersion int      `json:"metadata_version"`
-	SourceTypes     []string `json:"source_types"`
-	ReadOnly        bool     `json:"read_only"`
-	Capabilities    []string `json:"capabilities"`
-}
+type Identity = protocol.Identity
 
 type Response struct {
 	Endpoint string   `json:"endpoint"`
@@ -80,15 +72,8 @@ func Start(options Options) (*Server, Challenge, error) {
 	expiresAt := time.Now().UTC().Add(ttl)
 	server := &Server{
 		nonce: nonce, expiresAt: expiresAt, origins: slices.Clone(options.Origins), listener: listener,
-		done: make(chan struct{}),
-		response: Response{
-			Endpoint: options.Endpoint, Token: options.Token,
-			Identity: Identity{
-				Product: quackridge.Product, ProductVersion: quackridge.Version,
-				ProtocolVersion: quackridge.ProtocolVersion, MetadataVersion: quackridge.MetadataVersion,
-				SourceTypes: []string{"postgres"}, ReadOnly: true, Capabilities: quackridge.Capabilities(),
-			},
-		},
+		done:     make(chan struct{}),
+		response: Response{Endpoint: options.Endpoint, Token: options.Token, Identity: protocol.CurrentIdentity()},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/pair", server.handle)

@@ -129,6 +129,36 @@ func contains(values []string, target string) bool {
 	return false
 }
 
+func TestPinnedExtensionVersions(t *testing.T) {
+	extensionDir := os.Getenv("QUACKRIDGE_EXTENSION_DIR")
+	if extensionDir == "" {
+		t.Skip("QUACKRIDGE_EXTENSION_DIR is required")
+	}
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, extension := range []string{"httpfs", "postgres_scanner", "quack"} {
+		if err := loadExtension(t.Context(), db, extensionDir+"/"+extension+".duckdb_extension"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := db.QueryContext(t.Context(), `SELECT extension_name, coalesce(extension_version, '')
+		FROM duckdb_extensions() WHERE loaded AND extension_name IN ('httpfs', 'postgres_scanner', 'quack')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, version string
+		if err := rows.Scan(&name, &version); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s=%q", name, version)
+	}
+}
+
 func TestQuackCancellationIsExplicitlyNoop(t *testing.T) {
 	extensionDir := os.Getenv("QUACKRIDGE_EXTENSION_DIR")
 	if extensionDir == "" {

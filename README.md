@@ -36,4 +36,5 @@ make e2e
 ```
 
 See [the implementation plan](docs/plans/2026-08-11-quackridge-v1.md),
-[security policy](docs/security.md), and [contribution guide](CONTRIBUTING.md).
+[security policy](docs/security.md), [compatibility contract](docs/compatibility.md),
+and [contribution guide](CONTRIBUTING.md).

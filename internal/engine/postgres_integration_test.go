@@ -213,6 +213,13 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if customer != "Ada" || total != "19.75" {
 		t.Fatalf("Quack joined result = %q %q", customer, total)
 	}
+	decomposed := `SELECT count(*)
+		FROM ridge.query('SELECT id FROM warehouse.sales.customers') customers
+		JOIN ridge.query('SELECT customer_id FROM warehouse.sales.orders') orders
+		ON orders.customer_id = customers.id`
+	if err := client.QueryRowContext(ctx, decomposed).Scan(new(int)); err == nil {
+		t.Fatal("simultaneous remote scans unexpectedly replaced one server-side statement")
+	}
 
 	rows, err := client.QueryContext(ctx, `SELECT * FROM ridge.query(
 		'SELECT o.amount, o.placed_at, c.tags, o.note, c.id AS customer_id

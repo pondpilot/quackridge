@@ -120,15 +120,15 @@ Expose the service through a human-friendly CLI and a versioned local management
 
 Convert the spike's behavior into a compatibility-tested v1 contract. PondPilot must be able to distinguish QuackRidge from a generic Quack server and fail closed when versions or capabilities do not match.
 
-- [ ] Finalize QuackRidge identity fields and capabilities published through `quack_identify`, including protocol version, product version, source types, read-only mode, metadata version, and cancellation support.
-- [ ] Finalize the QuackRidge metadata relation name and exact Arrow/DuckDB types from `protocol/v1` fixtures.
-- [ ] Preserve sticky server sessions for an attached Quack client so statements in one PondPilot script tab retain transaction and temporary-object state.
-- [ ] Define how PondPilot query IDs are attached to server statements and correlated with Quack and engine logs without changing SQL semantics.
-- [ ] Prefix or map server failures to stable QuackRidge error codes while preserving sanitized, actionable context for PondPilot.
-- [ ] Add compatibility tests for supported, older, newer, and missing protocol/capability identities.
-- [ ] Add regression tests showing a multi-table statement succeeds through `catalog.query(...)` and fails if incorrectly decomposed into simultaneous remote scans.
-- [ ] Add result tests for nested values, decimals, timestamps/time zones, intervals, UUIDs, nulls, empty results, duplicate column names, and large streaming batches.
-- [ ] Add version-pair documentation and refuse untested DuckDB/Quack combinations at startup.
+- [x] Finalize QuackRidge identity fields and capabilities published through `quack_identify`, including protocol version, product version, source types, read-only mode, metadata version, and cancellation support.
+- [x] Finalize the QuackRidge metadata relation name and exact Arrow/DuckDB types from `protocol/v1` fixtures.
+- [x] Preserve sticky server sessions for an attached Quack client so statements in one PondPilot script tab retain transaction and temporary-object state.
+- [x] Define how PondPilot query IDs are attached to server statements and correlated with Quack and engine logs without changing SQL semantics.
+- [x] Prefix or map server failures to stable QuackRidge error codes while preserving sanitized, actionable context for PondPilot.
+- [x] Add compatibility tests for supported, older, newer, and missing protocol/capability identities.
+- [x] Add regression tests showing a multi-table statement succeeds through `catalog.query(...)` and fails if incorrectly decomposed into simultaneous remote scans.
+- [x] Add result tests for nested values, decimals, timestamps/time zones, intervals, UUIDs, nulls, empty results, duplicate column names, and large streaming batches.
+- [x] Add version-pair documentation and refuse untested DuckDB/Quack combinations at startup.
 
 ### Task 8: Add QuackRidge discovery, installation, and pairing to PondPilot
 

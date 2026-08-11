@@ -67,8 +67,12 @@ func ClassifyError(err error) error {
 		strings.Contains(lower, "temporary directory"),
 		strings.Contains(lower, "resource exhausted"):
 		return &Error{Code: CodeResourceExhausted, Message: "query resource limit exceeded", Cause: err}
-	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authorization"):
+	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authorization"),
+		strings.Contains(lower, "not authorized"):
 		return &Error{Code: CodeRejectedStatement, Message: "statement rejected by policy", Cause: err}
+	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "failed to connect"),
+		strings.Contains(lower, "connection closed"), strings.Contains(lower, "server closed the connection"):
+		return &Error{Code: CodeSourceUnavailable, Message: "source is unavailable", Cause: err}
 	case strings.Contains(lower, "authentication"), strings.Contains(lower, "invalid token"):
 		return &Error{Code: CodeAuthentication, Message: "authentication failed", Cause: err}
 	default:

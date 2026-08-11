@@ -17,6 +17,7 @@ func TestClassifyError(t *testing.T) {
 		{"cancelled", context.Canceled, CodeCancelled, "QR_CANCELLED: query cancelled"},
 		{"memory", errors.New("Out of Memory Error: secret query text"), CodeResourceExhausted, "QR_RESOURCE_EXHAUSTED: query resource limit exceeded"},
 		{"policy", errors.New("Unauthorized query: secret query text"), CodeRejectedStatement, "QR_REJECTED_STATEMENT: statement rejected by policy"},
+		{"source", errors.New("connection refused password=secret"), CodeSourceUnavailable, "QR_SOURCE_UNAVAILABLE: source is unavailable"},
 		{"unknown", errors.New("/private/path secret query text"), CodeInternal, "QR_INTERNAL: query failed"},
 	}
 	for _, test := range tests {

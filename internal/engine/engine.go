@@ -21,6 +21,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	quackridge "github.com/pondpilot/quackridge"
 	"github.com/pondpilot/quackridge/internal/policy"
+	protocol "github.com/pondpilot/quackridge/protocol/v1"
 )
 
 type Runtime struct {
@@ -86,6 +87,10 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 			return "", err
 		}
 	}
+	if err := verifyVersionPair(ctx, db); err != nil {
+		_ = db.Close()
+		return "", err
+	}
 	sandbox, err := os.MkdirTemp("", "quackridge-")
 	if err != nil {
 		_ = db.Close()
@@ -140,11 +145,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		}
 	}
 	uri := "quack:" + net.JoinHostPort(host, strconv.Itoa(port))
-	meta, _ := json.Marshal(map[string]any{
-		"product": quackridge.Product, "product_version": quackridge.Version,
-		"protocol_version": quackridge.ProtocolVersion, "metadata_version": quackridge.MetadataVersion,
-		"source_types": []string{"postgres"}, "read_only": true, "capabilities": quackridge.Capabilities(),
-	})
+	meta, _ := json.Marshal(protocol.CurrentIdentity())
 	if _, err := db.ExecContext(ctx, "CALL quack_identify(name => ?, provider => 'local', hostname => ?, region => '', meta => ?)", "QuackRidge", host, string(meta)); err != nil {
 		_ = policyHandle.Close()
 		_ = db.Close()
@@ -431,6 +432,45 @@ func loadExtension(ctx context.Context, db *sql.DB, path string) error {
 	quoted := strings.ReplaceAll(path, "'", "''")
 	if _, err := db.ExecContext(ctx, "LOAD '"+quoted+"'"); err != nil {
 		return internal("load required extension", err)
+	}
+	return nil
+}
+
+func verifyVersionPair(ctx context.Context, db *sql.DB) error {
+	var engineVersion string
+	if err := db.QueryRowContext(ctx, "SELECT version()").Scan(&engineVersion); err != nil {
+		return internal("verify DuckDB version", err)
+	}
+	versions := make(map[string]string)
+	rows, err := db.QueryContext(ctx, `SELECT extension_name, coalesce(extension_version, '')
+		FROM duckdb_extensions() WHERE loaded AND extension_name IN ('httpfs', 'postgres_scanner', 'quack')`)
+	if err != nil {
+		return internal("verify extension versions", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, version string
+		if err := rows.Scan(&name, &version); err != nil {
+			return internal("verify extension versions", err)
+		}
+		versions[name] = version
+	}
+	if err := rows.Err(); err != nil {
+		return internal("verify extension versions", err)
+	}
+	return validateVersionPair(engineVersion, versions)
+}
+
+func validateVersionPair(engineVersion string, extensions map[string]string) error {
+	want := quackridge.DuckDBVersion
+	if strings.TrimPrefix(engineVersion, "v") != want {
+		return &quackridge.Error{Code: quackridge.CodeProtocolMismatch, Message: "unsupported DuckDB version pair"}
+	}
+	for name, expected := range quackridge.ExtensionVersions() {
+		version, loaded := extensions[name]
+		if !loaded || version != expected {
+			return &quackridge.Error{Code: quackridge.CodeProtocolMismatch, Message: "unsupported DuckDB extension version pair"}
+		}
 	}
 	return nil
 }

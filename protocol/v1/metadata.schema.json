@@ -4,7 +4,7 @@
   "title": "quackridge_metadata_v1 row",
   "type": "object",
   "additionalProperties": false,
-  "required": ["source_id", "source_name", "source_type", "source_health", "catalog_name", "schema_name", "object_name", "object_type", "column_name", "ordinal_position", "duckdb_type", "nullable"],
+  "required": ["source_id", "source_name", "source_type", "source_health", "catalog_name", "schema_name", "object_name", "object_type", "column_name", "ordinal_position", "duckdb_type", "nullable", "error_code"],
   "properties": {
     "source_id": {"type": "string", "minLength": 1},
     "source_name": {"type": "string", "minLength": 1},
