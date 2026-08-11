@@ -49,9 +49,9 @@ Build the smallest runnable vertical slice in Go. The result must start native D
 - [x] Start Quack on an ephemeral loopback port with a generated token and publish QuackRidge protocol/version capabilities through `quack_identify`.
 - [x] Launch an ephemeral PostgreSQL container with representative schemas, related tables, decimals, timestamps, arrays, nullable columns, and a dedicated read-only role.
 - [x] Attach PostgreSQL under a validated source alias with `TYPE postgres, READ_ONLY` and execute a joined aggregate as one server-side query.
-- [ ] Connect from a separate native DuckDB Quack client, invoke the attached catalog's `query(...)` macro, and verify the joined result and complex types.
+- [x] Connect from a separate native DuckDB Quack client, invoke the attached catalog's `query(...)` macro, and verify the joined result and complex types.
 - [x] Expose a prototype QuackRidge-owned metadata relation that reports the attached PostgreSQL schemas, objects, columns, ordinals, types, nullability, and health.
-- [ ] Prove failed PostgreSQL startup does not prevent Quack from serving engine identity and health information.
+- [x] Prove failed PostgreSQL startup does not prevent Quack from serving engine identity and health information.
 - [x] Stop Quack and DuckDB through Go context cancellation and verify the port, database handles, and PostgreSQL container are released.
 - [x] Record exact version/platform findings and unresolved limitations in `docs/spikes/duckdb-quack.md`.
 

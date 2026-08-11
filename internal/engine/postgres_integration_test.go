@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -126,15 +127,118 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if _, err := client.ExecContext(ctx, attach); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.QueryRowContext(ctx, `SELECT total::VARCHAR FROM ridge.query(
-		'SELECT SUM(amount) AS total FROM warehouse.sales.orders')`).Scan(&total); err != nil {
+	if err := client.QueryRowContext(ctx, `SELECT customer, total::VARCHAR FROM ridge.query(
+		'SELECT c.name AS customer, SUM(o.amount) AS total
+		 FROM warehouse.sales.customers c
+		 JOIN warehouse.sales.orders o ON o.customer_id = c.id
+		 GROUP BY c.name')`).Scan(&customer, &total); err != nil {
 		t.Fatal(err)
 	}
-	if total != "19.75" {
-		t.Fatalf("Quack joined total = %s", total)
+	if customer != "Ada" || total != "19.75" {
+		t.Fatalf("Quack joined result = %q %q", customer, total)
+	}
+
+	rows, err := client.QueryContext(ctx, `SELECT * FROM ridge.query(
+		'SELECT o.amount, o.placed_at, c.tags, o.note, c.id AS customer_id
+		 FROM warehouse.sales.customers c
+		 JOIN warehouse.sales.orders o ON o.customer_id = c.id
+		 WHERE o.id = 1')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotTypes := make([]string, len(types))
+	for i, columnType := range types {
+		gotTypes[i] = strings.ToUpper(columnType.DatabaseTypeName())
+	}
+	for index, fragment := range []string{"DECIMAL", "TIMESTAMPTZ", "VARCHAR[]", "VARCHAR", "UUID"} {
+		if !strings.Contains(gotTypes[index], fragment) {
+			t.Fatalf("remote column types = %v; column %d does not contain %q", gotTypes, index, fragment)
+		}
+	}
+	if !rows.Next() {
+		t.Fatalf("complex row unavailable: %v", rows.Err())
+	}
+	var amount, tags, note, customerID any
+	var placedAt time.Time
+	if err := rows.Scan(&amount, &placedAt, &tags, &note, &customerID); err != nil {
+		t.Fatal(err)
+	}
+	if amount == nil || customerID == nil || note != nil || !placedAt.Equal(time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("complex values: amount=%v placed_at=%v tags=%v note=%v uuid=%v", amount, placedAt, tags, note, customerID)
+	}
+	tagsText := fmt.Sprint(tags)
+	if !strings.Contains(tagsText, "priority") || !strings.Contains(tagsText, "east") {
+		t.Fatalf("array round trip = %T(%v)", tags, tags)
 	}
 	if _, err := client.ExecContext(ctx, `FROM ridge.query(
 		'INSERT INTO warehouse.sales.orders VALUES (3, NULL, 1, now(), NULL)')`); err == nil {
 		t.Fatal("read-only attachment accepted write")
+	}
+}
+
+func TestUnavailablePostgresDoesNotStopQuackIdentity(t *testing.T) {
+	extensionDir := os.Getenv("QUACKRIDGE_EXTENSION_DIR")
+	if extensionDir == "" {
+		t.Skip("QUACKRIDGE_EXTENSION_DIR is required")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	runtime := engine.New()
+	endpoint, err := runtime.Start(ctx, quackridge.Options{ExtensionDir: extensionDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	adapter := postgres.New(runtime, postgres.Config{
+		Host: "127.0.0.1", Port: closedPort, Database: "missing", User: "reader", SSLMode: "disable",
+	}, postgres.Credential{Password: "unusable-test-credential"})
+	definition := source.Definition{ID: "unavailable", Name: "Unavailable", Alias: "unavailable", Type: "postgres", Enabled: true}
+	if err := adapter.Attach(ctx, definition); err == nil {
+		t.Fatal("unavailable PostgreSQL source unexpectedly attached")
+	}
+
+	client, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for _, extension := range []string{"httpfs", "quack"} {
+		path := strings.ReplaceAll(extensionDir+"/"+extension+".duckdb_extension", "'", "''")
+		if _, err := client.ExecContext(ctx, "LOAD '"+path+"'"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.ExecContext(ctx,
+		fmt.Sprintf("ATTACH '%s' AS ridge (TYPE quack, TOKEN '%s')", endpoint, runtime.Token())); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	if err := client.QueryRowContext(ctx, `SELECT name FROM ridge.query('FROM whoami()')`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "QuackRidge" {
+		t.Fatalf("identity name = %q", name)
+	}
+	var sourceRows int
+	if err := client.QueryRowContext(ctx,
+		`SELECT count(*) FROM ridge.query('FROM quackridge_metadata_v1()')`).Scan(&sourceRows); err != nil {
+		t.Fatal(err)
+	}
+	if sourceRows != 0 {
+		t.Fatalf("unexpected healthy source rows = %d", sourceRows)
 	}
 }

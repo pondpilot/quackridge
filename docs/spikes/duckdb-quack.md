@@ -48,9 +48,17 @@ The tests prove that one in-memory native engine:
   nullable values;
 - attaches that source with `TYPE postgres, READ_ONLY` under a validated alias;
 - computes the related-table aggregate `Ada / 19.75` as one server-side query;
-- returns the same decimal result through a separate native DuckDB Quack client;
+- returns the same joined aggregate through a separate native DuckDB Quack
+  client and preserves `DECIMAL(18,2)`, `TIMESTAMPTZ`, `VARCHAR[]`, nullable
+  `VARCHAR`, and `UUID` result types and values;
 - reports eight fixture columns through `quackridge_metadata_v1()`; and
 - denies an attempted PostgreSQL insert through the read-only attachment.
+
+`TestUnavailablePostgresDoesNotStopQuackIdentity` reserves and closes a TCP
+port, proves the PostgreSQL adapter rejects that unavailable endpoint, then
+attaches a separate Quack client and successfully reads `whoami()` and the
+empty metadata health relation. Source failure therefore does not prevent the
+engine data plane from serving identity and health information.
 
 Stopping the runtime closes DuckDB and the Quack listener; the identity test
 then proves that the allocated TCP port cannot be opened. Docker `--rm` cleanup
