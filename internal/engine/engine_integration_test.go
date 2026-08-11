@@ -75,6 +75,15 @@ func TestQuackIdentityAndShutdown(t *testing.T) {
 	if name != "QuackRidge" || !strings.Contains(meta, `"protocol_version":1`) {
 		t.Fatalf("identity name=%q meta=%q", name, meta)
 	}
+	var identity struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.Unmarshal(metaBytes, &identity); err != nil {
+		t.Fatalf("decode identity metadata: %v", err)
+	}
+	if !contains(identity.Capabilities, "cancellation_noop") || contains(identity.Capabilities, "cancel") {
+		t.Fatalf("identity does not advertise the cancellation waiver honestly: %v", identity.Capabilities)
+	}
 	if err := runtime.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -86,19 +95,105 @@ func TestQuackIdentityAndShutdown(t *testing.T) {
 	}
 }
 
-func TestQuackCancellationAndAbandonedStream(t *testing.T) {
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestQuackCancellationIsExplicitlyNoop(t *testing.T) {
 	extensionDir := os.Getenv("QUACKRIDGE_EXTENSION_DIR")
 	if extensionDir == "" {
 		t.Skip("QUACKRIDGE_EXTENSION_DIR is required")
 	}
-	runtime := New()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	endpoint, err := runtime.Start(ctx, quackridge.Options{ExtensionDir: extensionDir})
+	client, err := sql.Open("duckdb", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Stop(context.Background())
+	defer client.Close()
+	for _, extension := range []string{"httpfs", "quack"} {
+		if err := loadExtension(ctx, client, extensionDir+"/"+extension+".duckdb_extension"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var functions int
+	if err := client.QueryRowContext(ctx,
+		`SELECT count(*) FROM duckdb_functions() WHERE function_name = 'quack_cancel'`).Scan(&functions); err != nil {
+		t.Fatal(err)
+	}
+	if functions != 0 {
+		t.Fatalf("pinned Quack unexpectedly exposes cancellation; revisit the no-op capability")
+	}
+	for _, capability := range quackridge.Capabilities {
+		if capability == "cancel" {
+			t.Fatal("unsupported cancellation is advertised")
+		}
+	}
+}
+
+func TestEngineSandboxAndLimits(t *testing.T) {
+	extensionDir := os.Getenv("QUACKRIDGE_EXTENSION_DIR")
+	if extensionDir == "" {
+		t.Skip("QUACKRIDGE_EXTENSION_DIR is required")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	runtime := New()
+	endpoint, err := runtime.Start(ctx, quackridge.Options{
+		ExtensionDir: extensionDir,
+		MemoryLimit:  "64MB",
+		TempLimit:    "16MB",
+		Threads:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
+
+	settings := map[string]string{}
+	rows, err := runtime.db.QueryContext(ctx, `SELECT name, value FROM duckdb_settings()
+		WHERE name IN ('autoinstall_known_extensions', 'autoload_known_extensions',
+		'allow_community_extensions', 'allow_unsigned_extensions', 'allow_unredacted_secrets',
+		'enable_global_s3_configuration', 'lock_configuration', 'threads', 'memory_limit',
+		'max_temp_directory_size', 'default_secret_storage')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			t.Fatal(err)
+		}
+		settings[name] = value
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"autoinstall_known_extensions", "autoload_known_extensions", "allow_community_extensions", "allow_unsigned_extensions", "allow_unredacted_secrets", "enable_global_s3_configuration"} {
+		if settings[name] != "false" {
+			t.Fatalf("%s = %q, want false", name, settings[name])
+		}
+	}
+	if settings["lock_configuration"] != "true" || settings["threads"] != "1" || settings["default_secret_storage"] != "memory" {
+		t.Fatalf("locked settings = %v", settings)
+	}
+	if settings["memory_limit"] == "" || settings["max_temp_directory_size"] == "" {
+		t.Fatalf("resource settings are absent: %v", settings)
+	}
+	if _, err := runtime.db.ExecContext(ctx, "SET threads = 8"); err == nil {
+		t.Fatal("locked engine accepted a configuration change")
+	}
+	if _, err := runtime.db.ExecContext(ctx, "SELECT * FROM read_text('/etc/passwd')"); err == nil {
+		t.Fatal("engine read a file outside its sandbox")
+	}
+	if _, err := runtime.db.ExecContext(ctx, "INSTALL json"); err == nil {
+		t.Fatal("locked engine installed an extension")
+	}
 
 	client, err := sql.Open("duckdb", "")
 	if err != nil {
@@ -110,83 +205,42 @@ func TestQuackCancellationAndAbandonedStream(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	attach := "ATTACH '" + endpoint + "' AS ridge (TYPE quack, TOKEN '" + runtime.Token() + "')"
-	if _, err := client.ExecContext(ctx, attach); err != nil {
+	if _, err := client.ExecContext(ctx,
+		"ATTACH '"+endpoint+"' AS ridge (TYPE quack, TOKEN '"+runtime.Token()+"')"); err != nil {
 		t.Fatal(err)
 	}
-
-	done := make(chan error, 1)
-	started := time.Now()
-	go func() {
-		var total uint64
-		done <- client.QueryRowContext(ctx,
-			`SELECT total FROM ridge.query('/* quackridge-query-id:test-cancel */ SELECT sum(i)::UBIGINT AS total FROM range(1000000000000) t(i)')`).Scan(&total)
-	}()
-
-	cancelClient, err := sql.Open("duckdb", "")
-	if err != nil {
-		t.Fatal(err)
+	denied := []string{
+		"CREATE TABLE blocked(value INTEGER)",
+		"CREATE PERSISTENT SECRET blocked (TYPE postgres, HOST '127.0.0.1')",
+		"SET memory_limit = '2GB'",
+		"LOAD json",
+		"SELECT * FROM read_text('/etc/passwd')",
 	}
-	defer cancelClient.Close()
-	for _, extension := range []string{"httpfs", "quack"} {
-		if err := loadExtension(ctx, cancelClient, extensionDir+"/"+extension+".duckdb_extension"); err != nil {
-			t.Fatal(err)
+	for _, query := range denied {
+		wrapped := "FROM ridge.query('" + strings.ReplaceAll(query, "'", "''") + "')"
+		if _, err := client.ExecContext(ctx, wrapped); err == nil {
+			t.Fatalf("authorization accepted %q", query)
 		}
 	}
-	if _, err := cancelClient.ExecContext(ctx,
-		"ATTACH '"+endpoint+"' AS cancelridge (TYPE quack, TOKEN '"+runtime.Token()+"')"); err != nil {
-		t.Fatal(err)
-	}
-	var connectionID string
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		err = cancelClient.QueryRowContext(ctx, `SELECT connection_id FROM cancelridge.query(
-			'SELECT connection_id FROM quackridge_active_queries_v1() WHERE query_id = ''test-cancel''')`).Scan(&connectionID)
-		if err == nil && connectionID != "" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if connectionID == "" {
-		var rawID, rawQuery, rawState string
-		_ = runtime.QueryRow(ctx, `SELECT connection_id, query, state FROM quack_active_connections()
-			WHERE state = 'active' LIMIT 1`).Scan(&rawID, &rawQuery, &rawState)
-		t.Fatalf("active query was not discoverable for cancellation: %v; raw id=%q query=%q state=%q", err, rawID, rawQuery, rawState)
-	}
-	if _, err := cancelClient.ExecContext(ctx, "FROM quack_cancel('cancelridge', ?)", connectionID); err != nil {
-		t.Fatalf("send Quack cancellation: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err == nil || (!errors.Is(err, context.Canceled) && !strings.Contains(strings.ToLower(err.Error()), "interrupt")) {
-			t.Fatalf("long query cancellation error = %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("long query did not stop within the 3s cancellation threshold")
-	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
-		t.Fatalf("cancellation took %s", elapsed)
-	}
 
-	rows, err := client.QueryContext(ctx,
-		`SELECT i FROM ridge.query('SELECT i FROM range(1000000000) t(i)')`)
-	if err != nil {
+	var oversized any
+	resourceErr := runtime.db.QueryRowContext(ctx, "SELECT list(i) FROM range(10000000) t(i)").Scan(&oversized)
+	if resourceErr == nil || !quackridge.IsCode(quackridge.ClassifyError(resourceErr), quackridge.CodeResourceExhausted) {
+		t.Fatalf("memory limit error = %v", resourceErr)
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, time.Nanosecond)
+	defer timeoutCancel()
+	time.Sleep(time.Millisecond)
+	var total uint64
+	timeoutErr := runtime.db.QueryRowContext(timeoutCtx, "SELECT sum(i)::UBIGINT FROM range(1000000000) t(i)").Scan(&total)
+	if timeoutErr == nil || !quackridge.IsCode(quackridge.ClassifyError(errors.Join(timeoutErr, timeoutCtx.Err())), quackridge.CodeTimeout) {
+		t.Fatalf("timeout error = %v", timeoutErr)
+	}
+	sandbox := runtime.sandbox
+	if err := runtime.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !rows.Next() {
-		t.Fatal("stream returned no first row")
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	quickCtx, cancelQuick := context.WithTimeout(ctx, 3*time.Second)
-	defer cancelQuick()
-	var answer int
-	if err := client.QueryRowContext(quickCtx, `SELECT answer FROM ridge.query('SELECT 42 AS answer')`).Scan(&answer); err != nil {
-		t.Fatalf("server did not reclaim abandoned stream: %v", err)
-	}
-	if answer != 42 {
-		t.Fatalf("quick answer = %d", answer)
+	if _, err := os.Stat(sandbox); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox remained after shutdown: %v", err)
 	}
 }

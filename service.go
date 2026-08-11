@@ -46,6 +46,7 @@ type Options struct {
 	ListenPort   int
 	Token        string
 	MemoryLimit  string
+	TempLimit    string
 	Threads      int
 	QueryTimeout time.Duration
 	Logger       *slog.Logger

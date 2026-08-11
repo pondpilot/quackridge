@@ -82,7 +82,7 @@ func (a *Adapter) Attach(ctx context.Context, definition source.Definition) erro
 	}
 	return a.engine.Attach(ctx, engine.Attachment{
 		SourceID: definition.ID, SourceName: definition.Name, Alias: definition.Alias,
-		Type: "postgres", Connection: a.connectionString(), ReadOnly: true,
+		Type: "postgres", Secret: a.secretValues(), ReadOnly: true,
 	})
 }
 
@@ -112,6 +112,19 @@ func (a *Adapter) connectionString() string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func (a *Adapter) secretValues() map[string]string {
+	values := map[string]string{
+		"HOST": a.config.Host, "PORT": strconv.Itoa(a.config.Port), "DATABASE": a.config.Database,
+		"USER": a.config.User, "PASSWORD": a.credential.Password, "SSLMODE": a.config.SSLMode,
+	}
+	for key, value := range a.config.Options {
+		if safeOption(key) {
+			values[strings.ToUpper(key)] = value
+		}
+	}
+	return values
 }
 
 func quoteConnectionValue(value string) string {

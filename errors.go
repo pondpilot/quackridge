@@ -1,8 +1,10 @@
 package quackridge
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrorCode is a stable machine-readable failure category.
@@ -39,4 +41,37 @@ func (e *Error) Unwrap() error { return e.Cause }
 func IsCode(err error, code ErrorCode) bool {
 	var target *Error
 	return errors.As(err, &target) && target.Code == code
+}
+
+// ClassifyError converts driver, context, and transport failures into the
+// stable public error contract without returning SQL, credentials, or paths.
+func ClassifyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var public *Error
+	if errors.As(err, &public) {
+		return public
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &Error{Code: CodeTimeout, Message: "query timed out", Cause: err}
+	}
+	if errors.Is(err, context.Canceled) {
+		return &Error{Code: CodeCancelled, Message: "query cancelled", Cause: err}
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "out of memory"),
+		strings.Contains(lower, "memory limit"),
+		strings.Contains(lower, "temp directory"),
+		strings.Contains(lower, "temporary directory"),
+		strings.Contains(lower, "resource exhausted"):
+		return &Error{Code: CodeResourceExhausted, Message: "query resource limit exceeded", Cause: err}
+	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authorization"):
+		return &Error{Code: CodeRejectedStatement, Message: "statement rejected by policy", Cause: err}
+	case strings.Contains(lower, "authentication"), strings.Contains(lower, "invalid token"):
+		return &Error{Code: CodeAuthentication, Message: "authentication failed", Cause: err}
+	default:
+		return &Error{Code: CodeInternal, Message: "query failed", Cause: err}
+	}
 }

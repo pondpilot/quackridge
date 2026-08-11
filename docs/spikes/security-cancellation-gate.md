@@ -4,7 +4,7 @@ Date: 2026-08-11
 
 Pinned pair: DuckDB 1.5.5 / duckdb-go v2.10505.0 / signed Quack 1.5.5
 
-Conclusion: **FAIL — downstream implementation is blocked.**
+Conclusion: **WAIVED — cancellation is an explicit experimental no-op.**
 
 ## Authorization evidence
 
@@ -64,11 +64,19 @@ is not a signed, version-compatible 1.5.5 release artifact.
 Because cancellation cannot be issued, abandoned-stream reclamation and bounded
 server resource cleanup cannot be established for the pinned release pair.
 
-## Decision required to continue
+## Accepted experimental deviation
 
-The approved plan requires a hard stop on FAIL. Do not start the reusable
-production service, PondPilot UI, packaging, or release tasks until one of these
-changes is separately reviewed and approved:
+On 2026-08-11 the project owner explicitly directed implementation to continue
+with cancellation as a no-op. QuackRidge therefore advertises
+`cancellation_noop`, never `cancel`. PondPilot must disable or label cancellation
+for this target rather than implying that native work stopped.
+
+This waiver accepts that closing, abandoning, or cancelling a browser result can
+leave native DuckDB/PostgreSQL work running until it finishes naturally or hits
+a separately enforced resource limit. It does not reinterpret the failed test as
+a successful cancellation.
+
+The deviation should be removed by one of these follow-up changes:
 
 1. Pin a future signed DuckDB/Quack release that includes `quack_cancel`, then
    rerun authorization, cancellation, streaming-abandonment, and compatibility
@@ -79,5 +87,24 @@ changes is separately reviewed and approved:
    work without corrupting healthy sessions, accepting the loss or redesign of
    sticky session semantics.
 
-Until one of these paths passes, the gate remains **FAIL** and no experimental
-release may be published.
+The authorization and sandbox work may continue, and experimental releases may
+proceed only while the no-op capability and operational risk remain visible.
+
+## Sandbox evidence after the waiver
+
+The integration gate now starts DuckDB with 64 MB memory, 16 MB temporary
+storage, and one thread; verifies the settings and configuration lock; and
+forces a real memory-limit failure that maps to `QR_RESOURCE_EXHAUSTED`. It also
+proves local file reads, extension installation, settings changes, persistent
+secret creation, and writes are denied.
+
+`postgres_scanner` requires a temporary secret to attach while
+`LocalFileSystem` and persistent secrets are disabled. QuackRidge creates a
+named in-memory PostgreSQL secret from structured fields, attaches through that
+secret, disables PostgreSQL-backed secret-table discovery, and never places the
+credential-bearing DSN in an error. The disposable PostgreSQL join and metadata
+test passes under these locked settings.
+
+A local context deadline maps to the sanitized `QR_TIMEOUT` code. Through Quack,
+however, that deadline is observer-only because the pinned extension has no
+native cancellation operation; it carries the same risk accepted above.

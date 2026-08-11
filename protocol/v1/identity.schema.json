@@ -12,6 +12,6 @@
     "metadata_version": {"const": 1},
     "source_types": {"type": "array", "items": {"enum": ["postgres"]}, "uniqueItems": true},
     "read_only": {"const": true},
-    "capabilities": {"type": "array", "items": {"enum": ["cancel", "metadata_v1", "pairing_v1", "query_ids", "sticky_sessions"]}, "uniqueItems": true}
+    "capabilities": {"type": "array", "items": {"enum": ["cancellation_noop", "metadata_v1", "pairing_v1", "query_ids", "sticky_sessions"]}, "uniqueItems": true}
   }
 }

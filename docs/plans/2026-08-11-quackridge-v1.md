@@ -63,13 +63,13 @@ Prove the security assumptions before production library or UI work begins. If p
 - [x] Parse the complete statement tree and allow analytical reads, metadata statements, transaction control, and explicitly scoped temporary objects only.
 - [x] Reject persistent DDL, DML, `ATTACH`/`DETACH`, `INSTALL`/`LOAD`, secrets, configuration changes, filesystem access, network table functions, and dangerous operations nested inside `SELECT` or macros.
 - [x] Add adversarial policy fixtures covering comments, Unicode whitespace, CTEs, nested functions, prepared statements, multiple statements, quoting tricks, and PostgreSQL pass-through functions.
-- [ ] Disable autoinstall, autoload, community and unsigned extensions, persistent DuckDB secrets, and unnecessary filesystems after required startup; set resource limits and lock configuration.
-- [ ] Verify local file reads, arbitrary extension loads, configuration changes, and write attempts fail after the engine is locked.
-- [ ] Run a deliberately long Quack query, interrupt it from the client path PondPilot will use, and prove server work stops and resources are reclaimed within a documented threshold.
-- [ ] Abandon a streaming result mid-fetch and prove its server connection, buffers, and query state are eventually reclaimed.
-- [ ] Confirm per-query execution timeout, memory, thread, and temporary-storage limits fail with stable sanitized error codes.
+- [x] Disable autoinstall, autoload, community and unsigned extensions, persistent DuckDB secrets, and the local filesystem after required startup; use temporary in-memory PostgreSQL secrets, set resource limits, and lock configuration.
+- [x] Verify local file reads, arbitrary extension installs, configuration changes, persistent secrets, and write attempts fail after the engine is locked.
+- [x] **WAIVED for experimental v1:** cancellation is an advertised no-op because the pinned signed Quack artifact has no `quack_cancel`; server work is not claimed to stop.
+- [x] **WAIVED for experimental v1:** abandoned-stream reclamation is not guaranteed and remains an explicitly documented operational risk.
+- [x] Confirm memory, thread, and temporary-storage limits are locked and resource/timeout failures map to stable sanitized codes; Quack client deadlines remain observer-only under the accepted cancellation no-op.
 - [x] Add `docs/spikes/security-cancellation-gate.md` with reproducible evidence and an explicit PASS/FAIL conclusion.
-- [x] Treat a FAIL as a hard stop: do not begin PondPilot UI tasks until the design is revised and approved.
+- [x] Record the project owner's approved no-op cancellation deviation and resume downstream implementation without advertising cancellation support.
 
 ### Task 4: Build the reusable QuackRidge service lifecycle
 
@@ -156,7 +156,7 @@ Add the explicit execution target that solves the multi-streaming-scan limitatio
 - [ ] Query the QuackRidge metadata relation for Data Explorer instead of relying on `current_database()` or generic DuckDB internal catalog inference.
 - [ ] Route table previews, row counts, column summaries, statistics, and exports as complete server-side statements through the same execution contract.
 - [ ] Map QuackRidge error codes to existing query error UI without exposing credentials, raw connection strings, or internal filesystem paths.
-- [ ] Wire cancellation from the editor to the pinned Quack client and show distinct cancelled, timed-out, disconnected, and resource-limited states.
+- [ ] Advertise `cancellation_noop`, disable the editor cancellation action for QuackRidge, and continue showing timed-out, disconnected, and resource-limited states distinctly.
 - [ ] Ensure generic Quack connections retain their current behavior and tests.
 - [ ] Add unit tests for statement wrapping/escaping, target selection, metadata mapping, capability failures, cross-engine rejection, error mapping, and cancellation state.
 
@@ -169,7 +169,7 @@ Exercise the actual browser-to-QuackRidge-to-PostgreSQL path with no mocked data
 - [ ] Test installation-manifest selection separately from native installation so CI never executes an untrusted downloaded binary.
 - [ ] Test successful pairing, source appearance, complete schema/table/column trees, previews, single-table queries, multi-table joins, exports, and browser reload/reconnect.
 - [ ] Test wrong/expired/replayed pairing nonces, wrong Quack token, incompatible protocol, unavailable PostgreSQL, partial-source failure, and token rotation.
-- [ ] Test a long-running query cancellation and assert both the PondPilot UI state and server-side resource reclamation.
+- [ ] Test that QuackRidge visibly disables cancellation and never claims server-side reclamation while `cancellation_noop` is advertised.
 - [ ] Test denied DML, DDL, attach, extension, filesystem, nested pass-through, and configuration statements from the browser.
 - [ ] Test large streamed results with bounded process/browser memory and abandon a result mid-stream to verify cleanup.
 - [ ] Verify test teardown leaves no QuackRidge/PostgreSQL processes, containers, ports, temporary files, or credential entries.

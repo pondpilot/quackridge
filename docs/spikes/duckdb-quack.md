@@ -68,7 +68,8 @@ removes the disposable PostgreSQL container after every test.
 
 - Quack is beta and its functions and wire contract can change before DuckDB
   2.0.
-- `quack_cancel` is absent from the signed 1.5.5 artifact. This blocks the
-  cancellation gate described in `security-cancellation-gate.md`.
+- `quack_cancel` is absent from the signed 1.5.5 artifact. Cancellation is an
+  explicitly accepted experimental no-op documented in
+  `security-cancellation-gate.md`.
 - Native smoke evidence currently exists only for Linux AMD64. Other release
   targets remain unsupported until their exact archives pass native CI.

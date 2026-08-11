@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type Runtime struct {
 	token    string
 	logger   *slog.Logger
 	policy   *policy.Handle
+	sandbox  string
 }
 
 // Attachment is adapter-neutral. Connection is held only for the duration of
@@ -39,6 +41,7 @@ type Attachment struct {
 	Alias      string
 	Type       string
 	Connection string
+	Secret     map[string]string
 	ReadOnly   bool
 }
 
@@ -76,18 +79,26 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 			return "", err
 		}
 	}
-	if err := configure(ctx, db, opts); err != nil {
+	sandbox, err := os.MkdirTemp("", "quackridge-")
+	if err != nil {
 		_ = db.Close()
+		return "", internal("create engine sandbox", err)
+	}
+	if err := configure(ctx, db, opts, sandbox); err != nil {
+		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", err
 	}
 	policyHandle, err := policy.Install(ctx, db)
 	if err != nil {
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", internal("install authorization policy", err)
 	}
 	if _, err := db.ExecContext(ctx, "SET GLOBAL quack_authorization_function = 'quackridge_authorize'"); err != nil {
 		_ = policyHandle.Close()
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", internal("activate authorization policy", err)
 	}
 
@@ -96,6 +107,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		token, err = randomToken()
 		if err != nil {
 			_ = db.Close()
+			_ = os.RemoveAll(sandbox)
 			return "", internal("generate token", err)
 		}
 	}
@@ -105,6 +117,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	}
 	if !isLoopback(host) {
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", &quackridge.Error{Code: quackridge.CodeInternal, Message: "listener must use loopback"}
 	}
 	port := opts.ListenPort
@@ -112,6 +125,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		port, err = freePort(host)
 		if err != nil {
 			_ = db.Close()
+			_ = os.RemoveAll(sandbox)
 			return "", internal("allocate loopback port", err)
 		}
 	}
@@ -123,17 +137,25 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	})
 	if _, err := db.ExecContext(ctx, "CALL quack_identify(name => ?, provider => 'local', hostname => ?, region => '', meta => ?)", "QuackRidge", host, string(meta)); err != nil {
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", internal("publish identity", err)
 	}
 	if err := installMetadataRelation(ctx, db); err != nil {
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
+		return "", err
+	}
+	if err := lockConfiguration(ctx, db); err != nil {
+		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", err
 	}
 	if _, err := db.ExecContext(ctx, "CALL quack_serve(?, token => ?)", uri, token); err != nil {
 		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
 		return "", internal("start Quack", err)
 	}
-	r.db, r.endpoint, r.token, r.logger, r.policy = db, uri, token, logger, policyHandle
+	r.db, r.endpoint, r.token, r.logger, r.policy, r.sandbox = db, uri, token, logger, policyHandle, sandbox
 	logger.Info("engine ready", "component", "engine", "endpoint", uri)
 	return uri, nil
 }
@@ -150,12 +172,34 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source identifier is invalid"}
 	}
 	connection := strings.ReplaceAll(attachment.Connection, "'", "''")
+	secretName := "qr_secret_" + attachment.Alias
+	if len(attachment.Secret) > 0 {
+		secretStatement, err := createSecretStatement(secretName, attachment.Type, attachment.Secret)
+		if err != nil {
+			return err
+		}
+		if _, err := r.db.ExecContext(ctx, secretStatement); err != nil {
+			return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential setup failed", Cause: err}
+		}
+		connection = ""
+	}
 	statement := "ATTACH '" + connection + "' AS " + quoteIdentifier(attachment.Alias) + " (TYPE " + quoteIdentifier(attachment.Type)
+	if len(attachment.Secret) > 0 {
+		statement += ", SECRET " + quoteIdentifier(secretName)
+	}
 	if attachment.ReadOnly {
 		statement += ", READ_ONLY"
 	}
+	if strings.EqualFold(attachment.Type, "postgres") {
+		// Do not probe or register a secret storage table in the attached
+		// database. QuackRidge supplies credentials ephemerally for ATTACH.
+		statement += ", SECRET_STORAGE_TABLE ''"
+	}
 	statement += ")"
 	if _, err := r.db.ExecContext(ctx, statement); err != nil {
+		if len(attachment.Secret) > 0 {
+			_, _ = r.db.ExecContext(context.Background(), "DROP SECRET "+quoteIdentifier(secretName))
+		}
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source attach failed", Cause: err}
 	}
 	if _, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, 'ready', NULL)
@@ -188,8 +232,9 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	_, stopErr := r.db.ExecContext(ctx, "CALL quack_stop(?)", r.endpoint)
 	policyErr := r.policy.Close()
 	closeErr := r.db.Close()
-	r.db, r.endpoint, r.token, r.policy = nil, "", "", nil
-	return errors.Join(stopErr, policyErr, closeErr)
+	removeErr := os.RemoveAll(r.sandbox)
+	r.db, r.endpoint, r.token, r.policy, r.sandbox = nil, "", "", nil, ""
+	return errors.Join(stopErr, policyErr, closeErr, removeErr)
 }
 
 func (r *Runtime) Token() string {
@@ -210,7 +255,7 @@ func loadExtension(ctx context.Context, db *sql.DB, path string) error {
 	return nil
 }
 
-func configure(ctx context.Context, db *sql.DB, opts quackridge.Options) error {
+func configure(ctx context.Context, db *sql.DB, opts quackridge.Options, sandbox string) error {
 	memory := opts.MemoryLimit
 	if memory == "" {
 		memory = "1GB"
@@ -219,17 +264,40 @@ func configure(ctx context.Context, db *sql.DB, opts quackridge.Options) error {
 	if threads <= 0 {
 		threads = 4
 	}
+	if threads > 64 {
+		return &quackridge.Error{Code: quackridge.CodeResourceExhausted, Message: "thread limit exceeds the supported maximum"}
+	}
+	tempLimit := opts.TempLimit
+	if tempLimit == "" {
+		tempLimit = "1GB"
+	}
 	statements := []string{
 		"SET GLOBAL autoinstall_known_extensions = false",
 		"SET GLOBAL autoload_known_extensions = false",
 		"SET GLOBAL allow_community_extensions = false",
+		"SET GLOBAL allow_unsigned_extensions = false",
+		"SET GLOBAL allow_persistent_secrets = false",
+		"SET GLOBAL allow_unredacted_secrets = false",
+		"SET GLOBAL default_secret_storage = 'memory'",
+		"SET GLOBAL secret_directory = '" + strings.ReplaceAll(filepath.Join(sandbox, "secrets"), "'", "''") + "'",
+		"SET GLOBAL temp_directory = '" + strings.ReplaceAll(filepath.Join(sandbox, "temp"), "'", "''") + "'",
+		"SET GLOBAL enable_global_s3_configuration = false",
+		"SET GLOBAL disabled_filesystems = 'LocalFileSystem'",
 		fmt.Sprintf("SET GLOBAL threads = %d", threads),
 		"SET GLOBAL memory_limit = '" + strings.ReplaceAll(memory, "'", "''") + "'",
+		"SET GLOBAL max_temp_directory_size = '" + strings.ReplaceAll(tempLimit, "'", "''") + "'",
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return internal("lock engine configuration", err)
 		}
+	}
+	return nil
+}
+
+func lockConfiguration(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, "SET GLOBAL lock_configuration = true"); err != nil {
+		return internal("lock engine configuration", err)
 	}
 	return nil
 }
@@ -274,6 +342,38 @@ func validIdentifier(value string) bool {
 		}
 	}
 	return true
+}
+
+func createSecretStatement(name, sourceType string, values map[string]string) (string, error) {
+	if !validIdentifier(sourceType) {
+		return "", &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "secret type is invalid"}
+	}
+	allowed := map[string]bool{
+		"HOST": true, "HOSTADDR": true, "PORT": true, "DATABASE": true, "DBNAME": true,
+		"USER": true, "PASSWORD": true, "SSLMODE": true, "SSLROOTCERT": true,
+		"CONNECT_TIMEOUT": true, "APPLICATION_NAME": true, "KEEPALIVES": true,
+		"KEEPALIVES_IDLE": true, "OPTIONS": true,
+	}
+	keys := make([]string, 0, len(values))
+	normalized := make(map[string]string, len(values))
+	for rawKey, value := range values {
+		key := strings.ToUpper(rawKey)
+		if !allowed[key] {
+			return "", &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "secret option is invalid"}
+		}
+		if _, duplicate := normalized[key]; duplicate {
+			return "", &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "secret option is duplicated"}
+		}
+		normalized[key] = value
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, "TYPE "+sourceType)
+	for _, key := range keys {
+		parts = append(parts, key+" '"+strings.ReplaceAll(normalized[key], "'", "''")+"'")
+	}
+	return "CREATE OR REPLACE SECRET " + quoteIdentifier(name) + " (" + strings.Join(parts, ", ") + ")", nil
 }
 
 func quoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }

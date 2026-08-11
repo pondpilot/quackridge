@@ -8,4 +8,4 @@ const (
 	DuckDBVersion   = "1.5.5"
 )
 
-var Capabilities = []string{"cancel", "metadata_v1", "pairing_v1", "query_ids", "sticky_sessions"}
+var Capabilities = []string{"cancellation_noop", "metadata_v1", "pairing_v1", "query_ids", "sticky_sessions"}
