@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -61,6 +62,53 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if port == 0 {
 		t.Fatal("PostgreSQL did not become ready")
 	}
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("openssl is required for PostgreSQL TLS integration")
+	}
+	certificateDirectory := t.TempDir()
+	certificate := filepath.Join(certificateDirectory, "server.crt")
+	privateKey := filepath.Join(certificateDirectory, "server.key")
+	generateCertificate := exec.CommandContext(ctx, "openssl", "req", "-new", "-x509", "-days", "1", "-nodes",
+		"-out", certificate, "-keyout", privateKey, "-subj", "/CN=localhost")
+	if output, err := generateCertificate.CombinedOutput(); err != nil {
+		t.Fatalf("generate PostgreSQL TLS certificate: %v: %s", err, output)
+	}
+	for _, copySpec := range [][2]string{{certificate, container + ":/var/lib/postgresql/data/server.crt"}, {privateKey, container + ":/var/lib/postgresql/data/server.key"}} {
+		if output, err := exec.CommandContext(ctx, "docker", "cp", copySpec[0], copySpec[1]).CombinedOutput(); err != nil {
+			t.Fatalf("copy PostgreSQL TLS file: %v: %s", err, output)
+		}
+	}
+	tlsPermissions := exec.CommandContext(ctx, "docker", "exec", "-u", "0", container, "sh", "-c",
+		"chmod 600 /var/lib/postgresql/data/server.key && chown postgres:postgres /var/lib/postgresql/data/server.crt /var/lib/postgresql/data/server.key")
+	if output, err := tlsPermissions.CombinedOutput(); err != nil {
+		t.Fatalf("configure PostgreSQL TLS permissions: %v: %s", err, output)
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "exec", container, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "ALTER SYSTEM SET ssl = on").CombinedOutput(); err != nil {
+		t.Fatalf("enable PostgreSQL TLS: %v: %s", err, output)
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "restart", container).CombinedOutput(); err != nil {
+		t.Fatalf("restart PostgreSQL with TLS: %v: %s", err, output)
+	}
+	tlsReady := false
+	for ctx.Err() == nil {
+		if published, err := exec.CommandContext(ctx, "docker", "port", container, "5432/tcp").Output(); err == nil {
+			parts := strings.Split(strings.TrimSpace(string(published)), ":")
+			port, _ = strconv.Atoi(parts[len(parts)-1])
+		}
+		output, err := exec.CommandContext(ctx, "docker", "exec", container, "psql", "-U", "postgres", "-Atqc", "SHOW ssl").Output()
+		connection, dialErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 200*time.Millisecond)
+		if dialErr == nil {
+			_ = connection.Close()
+		}
+		if err == nil && dialErr == nil && strings.TrimSpace(string(output)) == "on" {
+			tlsReady = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !tlsReady {
+		t.Fatal("PostgreSQL did not restart with TLS")
+	}
 
 	fixture := `
 		CREATE SCHEMA sales;
@@ -87,7 +135,7 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
 	adapter := postgres.New(runtime, postgres.Config{
-		Host: "127.0.0.1", Port: port, Database: "postgres", User: "qr_reader", SSLMode: "disable",
+		Host: "127.0.0.1", Port: port, Database: "postgres", User: "qr_reader", SSLMode: "require",
 	}, postgres.Credential{Password: readerPassword})
 	definition := source.Definition{ID: "warehouse", Name: "Warehouse", Alias: "warehouse", Type: "postgres", Enabled: true}
 	if err := adapter.Attach(ctx, definition); err != nil {
@@ -206,6 +254,14 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if _, err := client.ExecContext(ctx, `FROM ridge.query(
 		'INSERT INTO warehouse.sales.orders VALUES (3, NULL, 1, now(), NULL)')`); err == nil {
 		t.Fatal("read-only attachment accepted write")
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "stop", "-t", "1", container).CombinedOutput(); err != nil {
+		t.Fatalf("stop PostgreSQL for disconnect test: %v: %s", err, output)
+	}
+	healthCtx, cancelHealth := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelHealth()
+	if err := adapter.Health(healthCtx, definition); err == nil {
+		t.Fatal("health check accepted a disconnected PostgreSQL source")
 	}
 }
 

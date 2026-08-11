@@ -84,6 +84,31 @@ func TestQuackIdentityAndShutdown(t *testing.T) {
 	if !contains(identity.Capabilities, "cancellation_noop") || contains(identity.Capabilities, "cancel") {
 		t.Fatalf("identity does not advertise the cancellation waiver honestly: %v", identity.Capabilities)
 	}
+	previousToken := runtime.Token()
+	if err := runtime.RotateToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Token() == previousToken {
+		t.Fatal("token rotation retained the old token")
+	}
+	rotatedClient, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rotatedClient.Close()
+	for _, extension := range []string{"httpfs", "quack"} {
+		if err := loadExtension(ctx, rotatedClient, extensionDir+"/"+extension+".duckdb_extension"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rotatedClient.ExecContext(ctx,
+		"ATTACH '"+endpoint+"' AS stale (TYPE quack, TOKEN '"+previousToken+"')"); err == nil {
+		t.Fatal("rotated token still authenticated a new client")
+	}
+	if _, err := rotatedClient.ExecContext(ctx,
+		"ATTACH '"+endpoint+"' AS current (TYPE quack, TOKEN '"+runtime.Token()+"')"); err != nil {
+		t.Fatalf("rotated token failed: %v", err)
+	}
 	if err := runtime.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}

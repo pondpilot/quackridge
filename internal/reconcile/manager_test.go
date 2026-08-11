@@ -127,3 +127,31 @@ func TestReloadRollsBackNewAttachments(t *testing.T) {
 		t.Fatalf("rollback cleanup = %v; attached=%v", events.cleaned, events.attached)
 	}
 }
+
+func TestBootstrapKeepsHealthySourcesWhenOneFails(t *testing.T) {
+	loader := &testLoader{document: config.Document{Version: config.CurrentVersion, Sources: []config.Source{
+		configured("warehouse", adapterBehavior{}),
+		configured("broken", adapterBehavior{FailValidation: true}),
+	}}}
+	credentials := secrets.NewMemory()
+	for _, id := range []string{"warehouse", "broken"} {
+		_ = credentials.Put(t.Context(), "source/"+id, []byte("password"))
+	}
+	events := &adapterEvents{}
+	manager, err := New(loader, credentials, testFactory{events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures, err := manager.Bootstrap(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].ID != "broken" {
+		t.Fatalf("failures = %#v", failures)
+	}
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if len(events.attached) != 1 || events.attached[0] != "warehouse" {
+		t.Fatalf("attached = %v", events.attached)
+	}
+}

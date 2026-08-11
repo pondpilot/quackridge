@@ -98,23 +98,23 @@ Add production source management while keeping secrets out of configuration, she
 - [x] Implement the PostgreSQL adapter using `ATTACH ... (TYPE postgres, READ_ONLY)` and a dedicated read-only database role.
 - [x] Verify startup transactions are read-only and make `doctor` warn about obvious role attributes or grants that conflict with the documented security model.
 - [x] Implement the stable v1 metadata relation from the protocol schema, including degraded/unavailable sources without collapsing healthy catalogs.
-- [ ] Add disposable PostgreSQL integration tests for schemas, tables, views, nullability, arrays, decimals, timestamps, joins, SSL options, timeouts, disconnects, and denied writes.
+- [x] Add disposable PostgreSQL integration tests for schemas, tables, views, nullability, arrays, decimals, timestamps, joins, SSL options, timeouts, disconnects, and denied writes.
 - [x] Ensure tests never inspect or mutate an existing developer database or credential store.
 
 ### Task 6: Implement the CLI, local control API, and browser pairing
 
 Expose the service through a human-friendly CLI and a versioned local management interface suitable for the future menu-bar app. Browser pairing is the only temporary HTTP management surface; all persistent management stays on local IPC.
 
-- [ ] Implement `quackridge source add|list|test|remove`, `serve`, `status`, `doctor`, `pair`, and `version` commands using the public service facade.
-- [ ] Read passwords and tokens through a masked prompt or standard input, never a password command-line flag; add tests proving secrets do not appear in arguments or logs.
-- [ ] Support stable human output plus explicit `--json` output for automation and the future GUI.
-- [ ] Run `serve` in the foreground by default with correct signal handling, deterministic exit codes, graceful query draining, and forced bounded shutdown.
-- [ ] Implement a versioned control API over Unix-domain sockets on macOS/Linux and named pipes on Windows with local-user access restrictions.
-- [ ] Expose configuration, source health, lifecycle, token rotation, version, capabilities, and diagnostics over control IPC without exposing raw secrets.
-- [ ] Implement `pair` as a short-lived loopback HTTP exchange with a single-use high-entropy nonce, strict origin allowlist, expiry, replay protection, and immediate shutdown after success or timeout.
-- [ ] Return only Quack endpoint, QuackRidge identity, capabilities, and the current Quack token from a successful pairing exchange.
-- [ ] Add manual URI/token display as an explicit development/self-hosted fallback.
-- [ ] Add unit and integration tests for IPC permissions, malformed messages, nonce replay, disallowed origins, expiry, token rotation, signal handling, and concurrent status calls.
+- [x] Implement `quackridge source add|list|test|remove`, `serve`, `status`, `doctor`, `pair`, and `version` commands using the public service facade.
+- [x] Read passwords and tokens through a masked prompt or standard input, never a password command-line flag; add tests proving secrets do not appear in arguments or logs.
+- [x] Support stable human output plus explicit `--json` output for automation and the future GUI.
+- [x] Run `serve` in the foreground by default with correct signal handling, deterministic exit codes, graceful query draining, and forced bounded shutdown.
+- [x] Implement a versioned control API over Unix-domain sockets on macOS/Linux and named pipes on Windows with local-user access restrictions.
+- [x] Expose configuration, source health, lifecycle, token rotation, version, capabilities, and diagnostics over control IPC without exposing raw secrets.
+- [x] Implement `pair` as a short-lived loopback HTTP exchange with a single-use high-entropy nonce, strict origin allowlist, expiry, replay protection, and immediate shutdown after success or timeout.
+- [x] Return only Quack endpoint, QuackRidge identity, capabilities, and the current Quack token from a successful pairing exchange.
+- [x] Add manual URI/token display as an explicit development/self-hosted fallback.
+- [x] Add unit and integration tests for IPC permissions, malformed messages, nonce replay, disallowed origins, expiry, token rotation, signal handling, and concurrent status calls.
 
 ### Task 7: Stabilize the QuackRidge query and metadata protocol
 

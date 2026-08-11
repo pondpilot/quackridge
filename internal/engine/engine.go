@@ -369,6 +369,60 @@ func (r *Runtime) Token() string {
 	return r.token
 }
 
+func (r *Runtime) RotateToken(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	token, err := randomToken()
+	if err != nil {
+		return internal("rotate token", err)
+	}
+	previous := r.token
+	if _, err := r.db.ExecContext(ctx, "CALL quack_stop(?)", r.endpoint); err != nil {
+		return internal("rotate token", err)
+	}
+	if _, err := r.db.ExecContext(ctx, "CALL quack_serve(?, token => ?)", r.endpoint, token); err != nil {
+		_, _ = r.db.ExecContext(context.Background(), "CALL quack_serve(?, token => ?)", r.endpoint, previous)
+		return internal("rotate token", err)
+	}
+	r.token = token
+	r.logger.Info("data-plane token rotated", "component", "engine")
+	return nil
+}
+
+func (r *Runtime) Diagnostics(ctx context.Context) (map[string]any, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	settings := make(map[string]string)
+	rows, err := r.db.QueryContext(ctx, `SELECT name, value FROM duckdb_settings() WHERE name IN
+		('memory_limit', 'max_temp_directory_size', 'threads', 'lock_configuration',
+		'autoinstall_known_extensions', 'autoload_known_extensions', 'allow_community_extensions',
+		'allow_unsigned_extensions', 'allow_persistent_secrets', 'disabled_filesystems')`)
+	if err != nil {
+		return nil, internal("read engine diagnostics", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, internal("read engine diagnostics", err)
+		}
+		settings[name] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, internal("read engine diagnostics", err)
+	}
+	return map[string]any{
+		"duckdb_version": quackridge.DuckDBVersion, "endpoint": r.endpoint,
+		"source_count": len(r.sources), "settings": settings,
+	}, nil
+}
+
 func loadExtension(ctx context.Context, db *sql.DB, path string) error {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {

@@ -37,6 +37,13 @@ type preparedSource struct {
 	fingerprint [32]byte
 }
 
+type Failure struct {
+	ID   string
+	Name string
+	Type string
+	Err  error
+}
+
 // Manager validates an entire candidate configuration and every credential
 // before mutating healthy attachments. Apply operations carry rollback actions
 // so a failed reload preserves the previous active set.
@@ -78,6 +85,34 @@ func (m *Manager) Reload(ctx context.Context) error {
 	return m.apply(ctx, prepared)
 }
 
+// Bootstrap is deliberately tolerant: every enabled source is validated and
+// attached independently so one unavailable database does not prevent the
+// Quack identity and healthy catalogs from starting.
+func (m *Manager) Bootstrap(ctx context.Context) ([]Failure, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	document, err := m.loader.Load()
+	if err != nil {
+		return nil, err
+	}
+	var failures []Failure
+	for _, configured := range document.Sources {
+		if !configured.Enabled {
+			continue
+		}
+		candidate, err := m.prepareOne(ctx, configured)
+		if err == nil {
+			err = candidate.adapter.Attach(ctx, candidate.definition)
+		}
+		if err != nil {
+			failures = append(failures, Failure{ID: configured.ID, Name: configured.Name, Type: configured.Type, Err: err})
+			continue
+		}
+		m.active[configured.ID] = activeSource(candidate)
+	}
+	return failures, nil
+}
+
 func (m *Manager) Validate(ctx context.Context, configured config.Source, credential []byte) error {
 	factory, ok := m.factories[configured.Type]
 	if !ok {
@@ -103,32 +138,38 @@ func (m *Manager) prepare(ctx context.Context) (map[string]preparedSource, error
 		if !configured.Enabled {
 			continue
 		}
-		factory, ok := m.factories[configured.Type]
-		if !ok {
-			return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source adapter is unavailable"}
-		}
-		credential, err := m.secrets.Get(ctx, configured.CredentialRef)
+		candidate, err := m.prepareOne(ctx, configured)
 		if err != nil {
-			return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential is unavailable", Cause: err}
+			return nil, err
 		}
-		configuredFingerprint := fingerprint(configured, credential)
-		adapter, buildErr := factory.Build(configured, credential)
-		clear(credential)
-		if buildErr != nil {
-			return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source configuration is invalid", Cause: buildErr}
-		}
-		definition := source.Definition{
-			ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-			Type: configured.Type, Enabled: configured.Enabled,
-		}
-		if err := adapter.Validate(ctx, definition); err != nil {
-			return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source validation failed", Cause: err}
-		}
-		prepared[configured.ID] = preparedSource{
-			definition: definition, adapter: adapter, fingerprint: configuredFingerprint,
-		}
+		prepared[configured.ID] = candidate
 	}
 	return prepared, nil
+}
+
+func (m *Manager) prepareOne(ctx context.Context, configured config.Source) (preparedSource, error) {
+	factory, ok := m.factories[configured.Type]
+	if !ok {
+		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source adapter is unavailable"}
+	}
+	credential, err := m.secrets.Get(ctx, configured.CredentialRef)
+	if err != nil {
+		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential is unavailable", Cause: err}
+	}
+	configuredFingerprint := fingerprint(configured, credential)
+	adapter, buildErr := factory.Build(configured, credential)
+	clear(credential)
+	if buildErr != nil {
+		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source configuration is invalid", Cause: buildErr}
+	}
+	definition := source.Definition{
+		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
+		Type: configured.Type, Enabled: configured.Enabled,
+	}
+	if err := adapter.Validate(ctx, definition); err != nil {
+		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source validation failed", Cause: err}
+	}
+	return preparedSource{definition: definition, adapter: adapter, fingerprint: configuredFingerprint}, nil
 }
 
 func (m *Manager) apply(ctx context.Context, prepared map[string]preparedSource) (err error) {
