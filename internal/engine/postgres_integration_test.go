@@ -68,6 +68,7 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 		CREATE TABLE sales.orders (id BIGINT PRIMARY KEY, customer_id UUID REFERENCES sales.customers(id), amount DECIMAL(18,2), placed_at TIMESTAMPTZ, note TEXT NULL);
 		INSERT INTO sales.customers VALUES ('00000000-0000-0000-0000-000000000001', 'Ada', ARRAY['priority','east']);
 		INSERT INTO sales.orders VALUES (1, '00000000-0000-0000-0000-000000000001', 12.50, '2026-08-11T12:00:00Z', NULL), (2, '00000000-0000-0000-0000-000000000001', 7.25, '2026-08-11T13:00:00Z', 'ok');
+		CREATE VIEW sales.customer_totals AS SELECT customer_id, sum(amount) AS total FROM sales.orders GROUP BY customer_id;
 		CREATE ROLE qr_reader LOGIN PASSWORD '` + readerPassword + `';
 		ALTER ROLE qr_reader SET default_transaction_read_only = on;
 		GRANT CONNECT ON DATABASE postgres TO qr_reader;
@@ -92,6 +93,25 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if err := adapter.Attach(ctx, definition); err != nil {
 		t.Fatalf("attach: %v; cause: %v", err, errors.Unwrap(err))
 	}
+	if warnings, err := adapter.PostureWarnings(ctx, definition); err != nil || len(warnings) != 0 {
+		t.Fatalf("read-only role posture warnings = %v, %v", warnings, err)
+	}
+	if err := adapter.Health(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := adapter.Metadata(ctx, definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var salesMetadata int
+	for _, row := range metadata {
+		if row.SchemaName != nil && *row.SchemaName == "sales" {
+			salesMetadata++
+		}
+	}
+	if salesMetadata != 10 {
+		t.Fatalf("adapter sales metadata rows = %d of %d", salesMetadata, len(metadata))
+	}
 
 	var customer string
 	var total string
@@ -105,11 +125,19 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	}
 	var columns int
 	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v1()
-		WHERE source_id = 'warehouse' AND schema_name = 'sales' AND object_name IN ('customers', 'orders')`).Scan(&columns); err != nil {
+		WHERE source_id = 'warehouse' AND schema_name = 'sales' AND object_name IN ('customers', 'orders', 'customer_totals')`).Scan(&columns); err != nil {
 		t.Fatal(err)
 	}
-	if columns != 8 {
+	if columns != 10 {
 		t.Fatalf("metadata columns = %d", columns)
+	}
+	var viewColumns int
+	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v1()
+		WHERE source_id = 'warehouse' AND object_name = 'customer_totals' AND object_type = 'view'`).Scan(&viewColumns); err != nil {
+		t.Fatal(err)
+	}
+	if viewColumns != 2 {
+		t.Fatalf("metadata view columns = %d", viewColumns)
 	}
 
 	client, err := sql.Open("duckdb", "")

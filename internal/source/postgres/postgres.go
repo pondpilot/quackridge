@@ -2,9 +2,10 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,11 +25,16 @@ type Config struct {
 }
 
 type Credential struct {
-	Password string
+	Password            string
+	RootCertificatePath string
 }
 
 type Attacher interface {
 	Attach(context.Context, engine.Attachment) error
+	Detach(context.Context, string, string) error
+	Query(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRow(context.Context, string, ...any) *sql.Row
+	RegisterObjectTypes(context.Context, string, []engine.ObjectType) error
 }
 
 type Adapter struct {
@@ -61,7 +67,7 @@ func (a *Adapter) Validate(ctx context.Context, definition source.Definition) er
 		return fmt.Errorf("invalid PostgreSQL SSL mode")
 	}
 	if a.config.SSLMode == "verify-ca" || a.config.SSLMode == "verify-full" {
-		if a.config.RootCertRef == "" {
+		if a.config.RootCertRef == "" || a.credential.RootCertificatePath == "" {
 			return fmt.Errorf("root certificate reference is required for %s", a.config.SSLMode)
 		}
 	}
@@ -80,38 +86,138 @@ func (a *Adapter) Attach(ctx context.Context, definition source.Definition) erro
 	if err := a.Validate(ctx, definition); err != nil {
 		return err
 	}
-	return a.engine.Attach(ctx, engine.Attachment{
+	if err := a.engine.Attach(ctx, engine.Attachment{
 		SourceID: definition.ID, SourceName: definition.Name, Alias: definition.Alias,
 		Type: "postgres", Secret: a.secretValues(), ReadOnly: true,
-	})
+	}); err != nil {
+		return err
+	}
+	if err := a.verifyReadOnly(ctx, definition.Alias); err != nil {
+		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
+		return err
+	}
+	if err := a.registerObjectTypes(ctx, definition); err != nil {
+		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
+		return err
+	}
+	return nil
 }
 
-func (a *Adapter) Metadata(context.Context, source.Definition) ([]source.MetadataRow, error) {
-	return nil, nil
+func (a *Adapter) verifyReadOnly(ctx context.Context, alias string) error {
+	quotedAlias := strings.ReplaceAll(alias, "'", "''")
+	var setting string
+	if err := a.engine.QueryRow(ctx,
+		"SELECT setting FROM postgres_query('"+quotedAlias+"', 'SELECT current_setting(''transaction_read_only'') AS setting')").Scan(&setting); err != nil {
+		return fmt.Errorf("verify PostgreSQL read-only transaction: %w", err)
+	}
+	if setting != "on" {
+		return errors.New("PostgreSQL role does not default to read-only transactions")
+	}
+	return nil
 }
-func (a *Adapter) Health(context.Context, source.Definition) error  { return nil }
-func (a *Adapter) Cleanup(context.Context, source.Definition) error { return nil }
 
-func (a *Adapter) connectionString() string {
-	values := url.Values{}
-	values.Set("host", a.config.Host)
-	values.Set("port", strconv.Itoa(a.config.Port))
-	values.Set("dbname", a.config.Database)
-	values.Set("user", a.config.User)
-	values.Set("password", a.credential.Password)
-	values.Set("sslmode", a.config.SSLMode)
-	for key, value := range a.config.Options {
-		if safeOption(key) {
-			values.Set(key, value)
-		}
+func (a *Adapter) registerObjectTypes(ctx context.Context, definition source.Definition) error {
+	quotedAlias := strings.ReplaceAll(definition.Alias, "'", "''")
+	rows, err := a.engine.Query(ctx, "SELECT table_schema, table_name, object_type FROM postgres_query('"+quotedAlias+"', "+
+		"'SELECT table_schema, table_name, CASE WHEN table_type = ''VIEW'' THEN ''view'' ELSE ''table'' END AS object_type FROM information_schema.tables')")
+	if err != nil {
+		return fmt.Errorf("load PostgreSQL object metadata: %w", err)
 	}
-	parts := make([]string, 0, len(values))
-	for key, entries := range values {
-		for _, value := range entries {
-			parts = append(parts, key+"="+quoteConnectionValue(value))
+	defer rows.Close()
+	var objects []engine.ObjectType
+	for rows.Next() {
+		var object engine.ObjectType
+		if err := rows.Scan(&object.Schema, &object.Name, &object.Type); err != nil {
+			return err
 		}
+		objects = append(objects, object)
 	}
-	return strings.Join(parts, " ")
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return a.engine.RegisterObjectTypes(ctx, definition.ID, objects)
+}
+
+func (a *Adapter) Metadata(ctx context.Context, definition source.Definition) ([]source.MetadataRow, error) {
+	rows, err := a.engine.Query(ctx, `SELECT source_id, source_name, source_type, source_health,
+		catalog_name, schema_name, object_name, object_type, column_name, ordinal_position,
+		duckdb_type, nullable, error_code FROM quackridge_metadata_v1() WHERE source_id = ?
+		ORDER BY schema_name, object_name, ordinal_position`, definition.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var metadata []source.MetadataRow
+	for rows.Next() {
+		var row source.MetadataRow
+		var schemaName, objectName, objectType, columnName, duckDBType, errorCode sql.NullString
+		var ordinal sql.NullInt64
+		var nullable sql.NullBool
+		if err := rows.Scan(&row.SourceID, &row.SourceName, &row.SourceType, &row.SourceHealth,
+			&row.CatalogName, &schemaName, &objectName, &objectType, &columnName, &ordinal,
+			&duckDBType, &nullable, &errorCode); err != nil {
+			return nil, err
+		}
+		row.SchemaName = stringPointer(schemaName)
+		row.ObjectName = stringPointer(objectName)
+		row.ObjectType = stringPointer(objectType)
+		row.ColumnName = stringPointer(columnName)
+		row.DuckDBType = stringPointer(duckDBType)
+		row.ErrorCode = stringPointer(errorCode)
+		if ordinal.Valid {
+			value := int(ordinal.Int64)
+			row.OrdinalPosition = &value
+		}
+		if nullable.Valid {
+			value := nullable.Bool
+			row.Nullable = &value
+		}
+		metadata = append(metadata, row)
+	}
+	return metadata, rows.Err()
+}
+func (a *Adapter) Health(ctx context.Context, definition source.Definition) error {
+	quotedAlias := strings.ReplaceAll(definition.Alias, "'", "''")
+	var value int
+	if err := a.engine.QueryRow(ctx,
+		"SELECT value FROM postgres_query('"+quotedAlias+"', 'SELECT 1 AS value')").Scan(&value); err != nil {
+		return fmt.Errorf("PostgreSQL health check failed: %w", err)
+	}
+	return nil
+}
+func (a *Adapter) Cleanup(ctx context.Context, definition source.Definition) error {
+	return a.engine.Detach(ctx, definition.Alias, definition.ID)
+}
+
+func stringPointer(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func (a *Adapter) PostureWarnings(ctx context.Context, definition source.Definition) ([]string, error) {
+	quotedAlias := strings.ReplaceAll(definition.Alias, "'", "''")
+	query := "SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls " +
+		"FROM postgres_query('" + quotedAlias + "', 'SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = current_user')"
+	var superuser, createRole, createDB, replication, bypassRLS bool
+	if err := a.engine.QueryRow(ctx, query).Scan(&superuser, &createRole, &createDB, &replication, &bypassRLS); err != nil {
+		return nil, fmt.Errorf("inspect PostgreSQL role posture: %w", err)
+	}
+	warnings := make([]string, 0, 2)
+	if superuser || createRole || createDB || replication || bypassRLS {
+		warnings = append(warnings, "PostgreSQL role has elevated role attributes")
+	}
+	grantQuery := "SELECT write_grants FROM postgres_query('" + quotedAlias + "', " +
+		"'SELECT count(*)::BIGINT AS write_grants FROM information_schema.role_table_grants WHERE grantee = current_user AND privilege_type <> ''SELECT''')"
+	var writeGrants int64
+	if err := a.engine.QueryRow(ctx, grantQuery).Scan(&writeGrants); err != nil {
+		return nil, fmt.Errorf("inspect PostgreSQL grants: %w", err)
+	}
+	if writeGrants > 0 {
+		warnings = append(warnings, "PostgreSQL role has non-SELECT table grants")
+	}
+	return warnings, nil
 }
 
 func (a *Adapter) secretValues() map[string]string {
@@ -124,11 +230,10 @@ func (a *Adapter) secretValues() map[string]string {
 			values[strings.ToUpper(key)] = value
 		}
 	}
+	if a.credential.RootCertificatePath != "" {
+		values["SSLROOTCERT"] = a.credential.RootCertificatePath
+	}
 	return values
-}
-
-func quoteConnectionValue(value string) string {
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), "'", `\'`) + "'"
 }
 
 func validSSLMode(value string) bool {

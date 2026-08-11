@@ -1,16 +1,15 @@
 package postgres
 
 import (
-	"strings"
 	"testing"
 )
 
-func TestConnectionStringIsBuiltOnlyInMemory(t *testing.T) {
+func TestCredentialIsSeparatedIntoTemporarySecretValues(t *testing.T) {
 	adapter := New(nil, Config{Host: "localhost", Port: 5432, Database: "db", User: "reader", SSLMode: "require"}, Credential{Password: "s'ecret"})
-	value := adapter.connectionString()
-	for _, part := range []string{"host='localhost'", "port='5432'", "password='s\\'ecret'", "sslmode='require'"} {
-		if !strings.Contains(value, part) {
-			t.Errorf("connection string missing expected non-literal part %q", part)
+	values := adapter.secretValues()
+	for key, want := range map[string]string{"HOST": "localhost", "PORT": "5432", "PASSWORD": "s'ecret", "SSLMODE": "require"} {
+		if values[key] != want {
+			t.Errorf("%s = %q, want %q", key, values[key], want)
 		}
 	}
 }

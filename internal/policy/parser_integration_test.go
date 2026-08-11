@@ -36,7 +36,7 @@ func TestRegisteredFunctionVisibleAcrossConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	handle, err := Install(t.Context(), db)
+	handle, err := Install(t.Context(), db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

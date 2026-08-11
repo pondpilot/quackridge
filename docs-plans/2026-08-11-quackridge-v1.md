@@ -75,31 +75,31 @@ Prove the security assumptions before production library or UI work begins. If p
 
 Turn the successful spike into a reusable Go library with explicit dependencies and deterministic lifecycle behavior. The CLI and future SwiftUI supervisor must both use this facade rather than reaching into engine packages.
 
-- [ ] Define the public `quackridge` API around context-driven `Start`, `Status`, `Reload`, and `Stop` operations plus immutable option and status types.
-- [ ] Implement a lifecycle state machine covering stopped, starting, ready, degraded, reloading, stopping, and failed states.
-- [ ] Move DuckDB ownership behind `internal/engine` and ensure no CLI, control, or adapter package receives raw engine internals unnecessarily.
-- [ ] Define a source-adapter registry and lifecycle contract that supports validation, attach, metadata, health, and cleanup without PostgreSQL-specific fields in the engine.
-- [ ] Implement stable typed errors for authentication, protocol mismatch, source unavailable, rejected statement, cancellation, timeout, resource exhaustion, and internal failure.
-- [ ] Add structured logging with query IDs, timing, source identity, and component fields while redacting credentials and SQL text by default.
-- [ ] Implement bounded reconnect backoff per source without retrying user queries automatically.
-- [ ] Make reload transactional: validate new configuration and secrets before replacing healthy source state, and preserve existing state on failure.
-- [ ] Add deterministic concurrent lifecycle tests, cleanup tests, and race-detector coverage for start/reload/stop/query interactions.
+- [x] Define the public `quackridge` API around context-driven `Start`, `Status`, `Reload`, and `Stop` operations plus immutable option and status types.
+- [x] Implement a lifecycle state machine covering stopped, starting, ready, degraded, reloading, stopping, and failed states.
+- [x] Move DuckDB ownership behind `internal/engine` and ensure no CLI, control, or adapter package receives raw engine internals unnecessarily.
+- [x] Define a source-adapter registry and lifecycle contract that supports validation, attach, metadata, health, and cleanup without PostgreSQL-specific fields in the engine.
+- [x] Implement stable typed errors for authentication, protocol mismatch, source unavailable, rejected statement, cancellation, timeout, resource exhaustion, and internal failure.
+- [x] Add structured logging with query IDs, timing, source identity, and component fields while redacting credentials and SQL text by default.
+- [x] Implement bounded reconnect backoff per source without retrying user queries automatically.
+- [x] Make reload transactional: validate new configuration and secrets before replacing healthy source state, and preserve existing state on failure.
+- [x] Add deterministic concurrent lifecycle tests, cleanup tests, and race-detector coverage for start/reload/stop/query interactions.
 
 ### Task 5: Implement configuration, credential stores, and the PostgreSQL adapter
 
 Add production source management while keeping secrets out of configuration, shell history, DuckDB persistence, and logs. PostgreSQL must remain read-only through both DuckDB attachment and database-level credentials.
 
-- [ ] Define a versioned configuration model containing source IDs, display names, validated aliases, adapter types, non-secret connection fields, enabled state, and migration version.
-- [ ] Store configuration in platform application-config directories with restrictive permissions, atomic replacement, backup-on-migration, and recovery tests for truncated writes.
-- [ ] Define the credential-store interface and implement macOS Keychain, Windows Credential Manager, and Linux Secret Service providers behind build-tagged or platform-specific packages.
-- [ ] Add an explicit environment/in-memory credential provider for CI and headless testing only; never silently fall back to plaintext files.
-- [ ] Model PostgreSQL host, port, database, user, SSL mode, root certificate reference, and connection options separately so a credential-bearing DSN is never persisted.
-- [ ] Implement `source add` validation that checks alias safety, duplicate IDs/aliases, SSL requirements, credential availability, and bounded connectivity before persistence.
-- [ ] Implement the PostgreSQL adapter using `ATTACH ... (TYPE postgres, READ_ONLY)` and a dedicated read-only database role.
-- [ ] Verify startup transactions are read-only and make `doctor` warn about obvious role attributes or grants that conflict with the documented security model.
-- [ ] Implement the stable v1 metadata relation from the protocol schema, including degraded/unavailable sources without collapsing healthy catalogs.
+- [x] Define a versioned configuration model containing source IDs, display names, validated aliases, adapter types, non-secret connection fields, enabled state, and migration version.
+- [x] Store configuration in platform application-config directories with restrictive permissions, atomic replacement, backup-on-migration, and recovery tests for truncated writes.
+- [x] Define the credential-store interface and implement macOS Keychain, Windows Credential Manager, and Linux Secret Service providers behind build-tagged or platform-specific packages.
+- [x] Add an explicit environment/in-memory credential provider for CI and headless testing only; never silently fall back to plaintext files.
+- [x] Model PostgreSQL host, port, database, user, SSL mode, root certificate reference, and connection options separately so a credential-bearing DSN is never persisted.
+- [x] Implement `source add` validation that checks alias safety, duplicate IDs/aliases, SSL requirements, credential availability, and bounded connectivity before persistence.
+- [x] Implement the PostgreSQL adapter using `ATTACH ... (TYPE postgres, READ_ONLY)` and a dedicated read-only database role.
+- [x] Verify startup transactions are read-only and make `doctor` warn about obvious role attributes or grants that conflict with the documented security model.
+- [x] Implement the stable v1 metadata relation from the protocol schema, including degraded/unavailable sources without collapsing healthy catalogs.
 - [ ] Add disposable PostgreSQL integration tests for schemas, tables, views, nullability, arrays, decimals, timestamps, joins, SSL options, timeouts, disconnects, and denied writes.
-- [ ] Ensure tests never inspect or mutate an existing developer database or credential store.
+- [x] Ensure tests never inspect or mutate an existing developer database or credential store.
 
 ### Task 6: Implement the CLI, local control API, and browser pairing
 

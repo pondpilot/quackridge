@@ -6,15 +6,19 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/duckdb/duckdb-go/v2/mapping"
 )
 
 var tempTablePattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+TABLE\s+(qr_tmp_[a-z0-9_]{1,55})\s+AS\s+((?:SELECT|WITH)\b.*)$`)
+var queryIDPattern = regexp.MustCompile(`/\*\s*quackridge-query-id:([A-Za-z0-9_-]+)\s*\*/`)
 
 var forbiddenFunctions = map[string]struct{}{
 	"getenv": {}, "glob": {}, "http_get": {}, "http_post": {},
@@ -37,6 +41,11 @@ type Evaluator struct {
 	jsonDB   *sql.DB
 	parseDB  mapping.Database
 	parseCon mapping.Connection
+}
+
+type Decision struct {
+	Allowed bool
+	Sources []string
 }
 
 func NewEvaluator() (*Evaluator, error) {
@@ -68,22 +77,32 @@ func (e *Evaluator) Close() error {
 }
 
 func (e *Evaluator) Allow(ctx context.Context, query string) bool {
+	return e.Evaluate(ctx, query).Allowed
+}
+
+func (e *Evaluator) Evaluate(ctx context.Context, query string) Decision {
 	if len(query) == 0 || len(query) > 1<<20 {
-		return false
+		return Decision{}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.isSingleStatement(query) {
-		return false
+		return Decision{}
 	}
 	if tree, ok := e.selectTree(ctx, query); ok {
-		return inspectTree(tree)
+		if !inspectTree(tree) {
+			return Decision{}
+		}
+		return Decision{Allowed: true, Sources: collectSources(tree)}
 	}
 	if matches := tempTablePattern.FindStringSubmatch(query); matches != nil {
 		tree, ok := e.selectTree(ctx, matches[2])
-		return ok && inspectTree(tree)
+		if ok && inspectTree(tree) {
+			return Decision{Allowed: true, Sources: collectSources(tree)}
+		}
+		return Decision{}
 	}
-	return e.isTransaction(query)
+	return Decision{Allowed: e.isTransaction(query)}
 }
 
 func (e *Evaluator) isSingleStatement(query string) bool {
@@ -171,12 +190,41 @@ func unsafeObjectName(value any) bool {
 		strings.HasSuffix(lower, ".parquet") || strings.HasSuffix(lower, ".duckdb")
 }
 
+func collectSources(value any) []string {
+	set := make(map[string]struct{})
+	var visit func(any)
+	visit = func(current any) {
+		switch node := current.(type) {
+		case []any:
+			for _, child := range node {
+				visit(child)
+			}
+		case map[string]any:
+			if nodeType, _ := node["type"].(string); nodeType == "BASE_TABLE" {
+				if catalog, _ := node["catalog_name"].(string); catalog != "" && catalog != "memory" {
+					set[catalog] = struct{}{}
+				}
+			}
+			for _, child := range node {
+				visit(child)
+			}
+		}
+	}
+	visit(value)
+	sources := make([]string, 0, len(set))
+	for source := range set {
+		sources = append(sources, source)
+	}
+	slices.Sort(sources)
+	return sources
+}
+
 type Handle struct {
 	connection *sql.Conn
 	evaluator  *Evaluator
 }
 
-func Install(ctx context.Context, db *sql.DB) (*Handle, error) {
+func Install(ctx context.Context, db *sql.DB, logger *slog.Logger) (*Handle, error) {
 	evaluator, err := NewEvaluator()
 	if err != nil {
 		return nil, err
@@ -186,7 +234,7 @@ func Install(ctx context.Context, db *sql.DB) (*Handle, error) {
 		_ = evaluator.Close()
 		return nil, err
 	}
-	function := &authorizationFunction{evaluator: evaluator}
+	function := &authorizationFunction{evaluator: evaluator, logger: logger}
 	if err := duckdb.RegisterScalarUDF(connection, "quackridge_authorize", function); err != nil {
 		_ = connection.Close()
 		_ = evaluator.Close()
@@ -199,7 +247,10 @@ func (h *Handle) Close() error {
 	return errors.Join(h.connection.Close(), h.evaluator.Close())
 }
 
-type authorizationFunction struct{ evaluator *Evaluator }
+type authorizationFunction struct {
+	evaluator *Evaluator
+	logger    *slog.Logger
+}
 
 func (*authorizationFunction) Config() duckdb.ScalarFuncConfig {
 	varchar, _ := duckdb.NewTypeInfo(duckdb.TYPE_VARCHAR)
@@ -213,6 +264,24 @@ func (f *authorizationFunction) Executor() duckdb.ScalarFuncExecutor {
 		if !ok {
 			return false, nil
 		}
-		return f.evaluator.Allow(context.Background(), query), nil
+		started := time.Now()
+		decision := f.evaluator.Evaluate(context.Background(), query)
+		queryID := ""
+		if match := queryIDPattern.FindStringSubmatch(query); match != nil {
+			queryID = match[1]
+		}
+		connectionID, _ := values[0].(string)
+		level := slog.LevelInfo
+		message := "query authorized"
+		if !decision.Allowed {
+			level = slog.LevelWarn
+			message = "query rejected"
+		}
+		if f.logger != nil {
+			f.logger.Log(context.Background(), level, message,
+				"component", "policy", "query_id", queryID, "connection_id", connectionID,
+				"source_ids", decision.Sources, "duration_ms", time.Since(started).Milliseconds())
+		}
+		return decision.Allowed, nil
 	}}
 }

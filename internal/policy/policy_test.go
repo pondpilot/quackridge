@@ -1,6 +1,10 @@
 package policy
 
 import (
+	"bytes"
+	"database/sql/driver"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +53,34 @@ func TestAdversarialPolicy(t *testing.T) {
 				t.Fatalf("Allow(%q) = %v, want %v", test.query, got, test.allow)
 			}
 		})
+	}
+}
+
+func TestAuthorizationLogIsStructuredAndRedacted(t *testing.T) {
+	evaluator, err := NewEvaluator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evaluator.Close()
+	var output bytes.Buffer
+	function := &authorizationFunction{
+		evaluator: evaluator,
+		logger:    slog.New(slog.NewJSONHandler(&output, nil)),
+	}
+	query := "/* quackridge-query-id:q_123 */ SELECT * FROM warehouse.sales.orders WHERE note = 'credential=secret'"
+	allowed, err := function.Executor().RowExecutor([]driver.Value{"connection-1", query})
+	if err != nil || allowed != true {
+		t.Fatalf("authorization = %v, %v", allowed, err)
+	}
+	logLine := output.String()
+	for _, want := range []string{`"component":"policy"`, `"query_id":"q_123"`, `"connection_id":"connection-1"`, `"source_ids":["warehouse"]`, `"duration_ms":`} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("log %q does not contain %q", logLine, want)
+		}
+	}
+	for _, forbidden := range []string{"credential=secret", "sales.orders", "SELECT"} {
+		if strings.Contains(logLine, forbidden) {
+			t.Fatalf("log leaked %q: %s", forbidden, logLine)
+		}
 	}
 }

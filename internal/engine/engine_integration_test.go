@@ -129,7 +129,7 @@ func TestQuackCancellationIsExplicitlyNoop(t *testing.T) {
 	if functions != 0 {
 		t.Fatalf("pinned Quack unexpectedly exposes cancellation; revisit the no-op capability")
 	}
-	for _, capability := range quackridge.Capabilities {
+	for _, capability := range quackridge.Capabilities() {
 		if capability == "cancel" {
 			t.Fatal("unsupported cancellation is advertised")
 		}

@@ -57,6 +57,7 @@ type Runtime interface {
 	Start(context.Context, Options) (endpoint string, err error)
 	Reload(context.Context) error
 	Stop(context.Context) error
+	Sources() []SourceStatus
 }
 
 type Service struct {
@@ -67,7 +68,7 @@ type Service struct {
 }
 
 func New(runtime Runtime) *Service {
-	return &Service{runtime: runtime, status: Status{State: StateStopped, Capabilities: slices.Clone(Capabilities)}}
+	return &Service{runtime: runtime, status: Status{State: StateStopped, Capabilities: Capabilities()}}
 }
 
 func (s *Service) Start(ctx context.Context, opts Options) error {
@@ -93,6 +94,10 @@ func (s *Service) Start(ctx context.Context, opts Options) error {
 	s.status.State = StateReady
 	s.status.Endpoint = endpoint
 	s.status.StartedAt = time.Now().UTC()
+	s.status.Sources = slices.Clone(s.runtime.Sources())
+	if hasUnavailableSource(s.status.Sources) {
+		s.status.State = StateDegraded
+	}
 	return nil
 }
 
@@ -115,8 +120,16 @@ func (s *Service) Reload(ctx context.Context) error {
 	s.status.State = previous
 	if err != nil {
 		s.status.LastError = sanitize(err)
+		return err
 	}
-	return err
+	s.status.LastError = ""
+	s.status.Sources = slices.Clone(s.runtime.Sources())
+	if hasUnavailableSource(s.status.Sources) {
+		s.status.State = StateDegraded
+	} else {
+		s.status.State = StateReady
+	}
+	return nil
 }
 
 func (s *Service) Stop(ctx context.Context) error {
@@ -138,14 +151,31 @@ func (s *Service) Stop(ctx context.Context) error {
 		s.status.LastError = sanitize(err)
 		return err
 	}
-	s.status = Status{State: StateStopped, Capabilities: slices.Clone(Capabilities)}
+	s.status = Status{State: StateStopped, Capabilities: Capabilities()}
 	return nil
+}
+
+func hasUnavailableSource(sources []SourceStatus) bool {
+	for _, source := range sources {
+		if source.Health != "ready" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) Status() Status {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	status := s.status
+	s.mu.RUnlock()
+	if status.State == StateReady || status.State == StateDegraded {
+		status.Sources = slices.Clone(s.runtime.Sources())
+		if hasUnavailableSource(status.Sources) {
+			status.State = StateDegraded
+		} else {
+			status.State = StateReady
+		}
+	}
 	status.Sources = slices.Clone(status.Sources)
 	status.Capabilities = slices.Clone(status.Capabilities)
 	return status

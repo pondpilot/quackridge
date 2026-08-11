@@ -31,6 +31,7 @@ type Runtime struct {
 	logger   *slog.Logger
 	policy   *policy.Handle
 	sandbox  string
+	sources  map[string]quackridge.SourceStatus
 }
 
 // Attachment is adapter-neutral. Connection is held only for the duration of
@@ -43,6 +44,12 @@ type Attachment struct {
 	Connection string
 	Secret     map[string]string
 	ReadOnly   bool
+}
+
+type ObjectType struct {
+	Schema string
+	Name   string
+	Type   string
 }
 
 func New() *Runtime { return &Runtime{} }
@@ -89,7 +96,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		_ = os.RemoveAll(sandbox)
 		return "", err
 	}
-	policyHandle, err := policy.Install(ctx, db)
+	policyHandle, err := policy.Install(ctx, db, logger)
 	if err != nil {
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
@@ -106,6 +113,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	if token == "" {
 		token, err = randomToken()
 		if err != nil {
+			_ = policyHandle.Close()
 			_ = db.Close()
 			_ = os.RemoveAll(sandbox)
 			return "", internal("generate token", err)
@@ -116,6 +124,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		host = "127.0.0.1"
 	}
 	if !isLoopback(host) {
+		_ = policyHandle.Close()
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
 		return "", &quackridge.Error{Code: quackridge.CodeInternal, Message: "listener must use loopback"}
@@ -124,6 +133,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	if port == 0 {
 		port, err = freePort(host)
 		if err != nil {
+			_ = policyHandle.Close()
 			_ = db.Close()
 			_ = os.RemoveAll(sandbox)
 			return "", internal("allocate loopback port", err)
@@ -133,38 +143,56 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	meta, _ := json.Marshal(map[string]any{
 		"product": quackridge.Product, "product_version": quackridge.Version,
 		"protocol_version": quackridge.ProtocolVersion, "metadata_version": quackridge.MetadataVersion,
-		"source_types": []string{"postgres"}, "read_only": true, "capabilities": quackridge.Capabilities,
+		"source_types": []string{"postgres"}, "read_only": true, "capabilities": quackridge.Capabilities(),
 	})
 	if _, err := db.ExecContext(ctx, "CALL quack_identify(name => ?, provider => 'local', hostname => ?, region => '', meta => ?)", "QuackRidge", host, string(meta)); err != nil {
+		_ = policyHandle.Close()
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
 		return "", internal("publish identity", err)
 	}
 	if err := installMetadataRelation(ctx, db); err != nil {
+		_ = policyHandle.Close()
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
 		return "", err
 	}
 	if err := lockConfiguration(ctx, db); err != nil {
+		_ = policyHandle.Close()
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
 		return "", err
 	}
 	if _, err := db.ExecContext(ctx, "CALL quack_serve(?, token => ?)", uri, token); err != nil {
+		_ = policyHandle.Close()
 		_ = db.Close()
 		_ = os.RemoveAll(sandbox)
 		return "", internal("start Quack", err)
 	}
 	r.db, r.endpoint, r.token, r.logger, r.policy, r.sandbox = db, uri, token, logger, policyHandle, sandbox
+	r.sources = make(map[string]quackridge.SourceStatus)
 	logger.Info("engine ready", "component", "engine", "endpoint", uri)
 	return uri, nil
 }
 
-func (r *Runtime) Reload(context.Context) error { return nil }
+func (r *Runtime) Reload(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	if err := r.db.PingContext(ctx); err != nil {
+		return internal("validate engine during reload", err)
+	}
+	// Source replacement is introduced with the configuration reconciler. Until
+	// then reload is a validated, side-effect-free transaction.
+	return nil
+}
 
 func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	started := time.Now()
 	if r.db == nil {
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
 	}
@@ -176,9 +204,11 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 	if len(attachment.Secret) > 0 {
 		secretStatement, err := createSecretStatement(secretName, attachment.Type, attachment.Secret)
 		if err != nil {
+			r.recordSource(attachment, "unavailable", quackridge.CodeSourceUnavailable)
 			return err
 		}
 		if _, err := r.db.ExecContext(ctx, secretStatement); err != nil {
+			r.recordSource(attachment, "unavailable", quackridge.CodeSourceUnavailable)
 			return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential setup failed", Cause: err}
 		}
 		connection = ""
@@ -200,6 +230,10 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 		if len(attachment.Secret) > 0 {
 			_, _ = r.db.ExecContext(context.Background(), "DROP SECRET "+quoteIdentifier(secretName))
 		}
+		r.recordSource(attachment, "unavailable", quackridge.CodeSourceUnavailable)
+		r.logger.Warn("source attach failed", "component", "source", "source_id", attachment.SourceID,
+			"source_type", attachment.Type, "duration_ms", time.Since(started).Milliseconds(),
+			"error_code", quackridge.CodeSourceUnavailable)
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source attach failed", Cause: err}
 	}
 	if _, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, 'ready', NULL)
@@ -210,8 +244,42 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 		_, _ = r.db.ExecContext(context.Background(), "DETACH "+quoteIdentifier(attachment.Alias))
 		return internal("register source metadata", err)
 	}
-	r.logger.Info("source attached", "component", "source", "source_id", attachment.SourceID, "source_type", attachment.Type)
+	r.recordSource(attachment, "ready", "")
+	r.logger.Info("source ready", "component", "source", "source_id", attachment.SourceID,
+		"source_type", attachment.Type, "duration_ms", time.Since(started).Milliseconds())
 	return nil
+}
+
+func (r *Runtime) recordSource(attachment Attachment, health string, code quackridge.ErrorCode) {
+	if r.sources == nil {
+		r.sources = make(map[string]quackridge.SourceStatus)
+	}
+	r.sources[attachment.SourceID] = quackridge.SourceStatus{
+		ID: attachment.SourceID, Name: attachment.SourceName, Type: attachment.Type,
+		Health: health, ErrorCode: string(code),
+	}
+	if r.db != nil {
+		var errorCode any
+		if code != "" {
+			errorCode = string(code)
+		}
+		_, _ = r.db.ExecContext(context.Background(), `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (source_id) DO UPDATE SET source_name = excluded.source_name,
+			source_type = excluded.source_type, catalog_name = excluded.catalog_name,
+			source_health = excluded.source_health, error_code = excluded.error_code`,
+			attachment.SourceID, attachment.SourceName, attachment.Type, attachment.Alias, health, errorCode)
+	}
+}
+
+func (r *Runtime) Sources() []quackridge.SourceStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sources := make([]quackridge.SourceStatus, 0, len(r.sources))
+	for _, status := range r.sources {
+		sources = append(sources, status)
+	}
+	slices.SortFunc(sources, func(a, b quackridge.SourceStatus) int { return strings.Compare(a.ID, b.ID) })
+	return sources
 }
 
 func (r *Runtime) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
@@ -221,6 +289,64 @@ func (r *Runtime) QueryRow(ctx context.Context, query string, args ...any) *sql.
 		return (&sql.DB{}).QueryRowContext(ctx, query, args...)
 	}
 	return r.db.QueryRowContext(ctx, query, args...)
+}
+
+func (r *Runtime) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	return r.db.QueryContext(ctx, query, args...)
+}
+
+func (r *Runtime) Detach(ctx context.Context, alias, sourceID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	if !validIdentifier(alias) {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source identifier is invalid"}
+	}
+	if _, err := r.db.ExecContext(ctx, "DETACH "+quoteIdentifier(alias)); err != nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source detach failed", Cause: err}
+	}
+	_, _ = r.db.ExecContext(ctx, "DROP SECRET "+quoteIdentifier("qr_secret_"+alias))
+	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_sources WHERE source_id = ?", sourceID)
+	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_objects WHERE source_id = ?", sourceID)
+	delete(r.sources, sourceID)
+	r.logger.Info("source detached", "component", "source", "source_id", sourceID)
+	return nil
+}
+
+func (r *Runtime) RegisterObjectTypes(ctx context.Context, sourceID string, objects []ObjectType) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	transaction, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return internal("begin metadata update", err)
+	}
+	defer transaction.Rollback()
+	if _, err := transaction.ExecContext(ctx, "DELETE FROM memory.main.quackridge_objects WHERE source_id = ?", sourceID); err != nil {
+		return internal("replace object metadata", err)
+	}
+	for _, object := range objects {
+		if object.Type != "table" && object.Type != "view" {
+			return &quackridge.Error{Code: quackridge.CodeInternal, Message: "object metadata type is invalid"}
+		}
+		if _, err := transaction.ExecContext(ctx, "INSERT INTO memory.main.quackridge_objects VALUES (?, ?, ?, ?)",
+			sourceID, object.Schema, object.Name, object.Type); err != nil {
+			return internal("insert object metadata", err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return internal("commit object metadata", err)
+	}
+	return nil
 }
 
 func (r *Runtime) Stop(ctx context.Context) error {
@@ -233,7 +359,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	policyErr := r.policy.Close()
 	closeErr := r.db.Close()
 	removeErr := os.RemoveAll(r.sandbox)
-	r.db, r.endpoint, r.token, r.policy, r.sandbox = nil, "", "", nil, ""
+	r.db, r.endpoint, r.token, r.policy, r.sandbox, r.sources = nil, "", "", nil, "", nil
 	return errors.Join(stopErr, policyErr, closeErr, removeErr)
 }
 
@@ -309,14 +435,24 @@ func installMetadataRelation(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, sources); err != nil {
 		return internal("create source registry", err)
 	}
+	const objects = `CREATE TABLE quackridge_objects (
+		source_id VARCHAR NOT NULL, schema_name VARCHAR NOT NULL, object_name VARCHAR NOT NULL,
+		object_type VARCHAR NOT NULL CHECK (object_type IN ('table', 'view')),
+		PRIMARY KEY (source_id, schema_name, object_name))`
+	if _, err := db.ExecContext(ctx, objects); err != nil {
+		return internal("create object registry", err)
+	}
 	const statement = `CREATE OR REPLACE MACRO quackridge_metadata_v1() AS TABLE
 		SELECT s.source_id, s.source_name, s.source_type, s.source_health,
 		s.catalog_name, c.schema_name, c.table_name object_name,
-		CASE WHEN internal THEN NULL ELSE 'table' END object_type, column_name,
+		CASE WHEN c.table_name IS NULL OR c.internal THEN NULL
+			ELSE coalesce(o.object_type, 'table') END object_type, column_name,
 		column_index + 1 ordinal_position, data_type duckdb_type, is_nullable nullable,
 		s.error_code
 		FROM memory.main.quackridge_sources s
-		LEFT JOIN duckdb_columns() c ON c.database_name = s.catalog_name`
+		LEFT JOIN duckdb_columns() c ON c.database_name = s.catalog_name
+		LEFT JOIN memory.main.quackridge_objects o ON o.source_id = s.source_id
+			AND o.schema_name = c.schema_name AND o.object_name = c.table_name`
 	if _, err := db.ExecContext(ctx, statement); err != nil {
 		return internal("create metadata relation", err)
 	}
