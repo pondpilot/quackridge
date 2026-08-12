@@ -27,7 +27,7 @@ func TestQuackIdentityAndShutdown(t *testing.T) {
 	defer cancel()
 	endpoint, err := runtime.Start(ctx, quackridge.Options{ExtensionDir: extensionDir})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%v: %v", err, errors.Unwrap(err))
 	}
 	t.Cleanup(func() {
 		if err := runtime.Stop(context.Background()); err != nil {
