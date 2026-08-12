@@ -2,7 +2,7 @@
 
 Build QuackRidge as a standalone Apache-2.0 Go project at `pondpilot/quackridge`, then integrate it with PondPilot as an explicit local execution target. The implementation follows a vertical-spike-first sequence: prove the risky DuckDB/Quack, authorization, cancellation, and packaging seams before building production abstractions or browser UI. Version one is read-only, PostgreSQL-only, loopback-only, and experimental while Quack remains beta.
 
-The approved design is in `../pondpilot/docs/designs/2026-08-11-quackridge.md`. Supported v1 release targets are macOS AMD64, macOS ARM64, Linux AMD64, and Windows AMD64. Linux ARM64 and Windows ARM64 remain follow-up targets until native CI evidence is available.
+The approved design is in `../pondpilot/docs/designs/2026-08-11-quackridge.md`. Supported v0.1 release targets are macOS AMD64, macOS ARM64, and Linux AMD64. Windows AMD64 moved to a follow-up after native CI exposed an upstream MinGW/MSVC extension ABI mismatch; Linux ARM64 and Windows ARM64 also remain follow-up targets.
 
 ## Validation Commands
 
@@ -178,18 +178,19 @@ Exercise the actual browser-to-QuackRidge-to-PostgreSQL path with no mocked data
 
 ### Task 11: Package, sign, and publish QuackRidge artifacts
 
-Produce self-contained, verifiable release assets for the approved v1 platforms. PondPilot consumes only the signed manifest and must never construct download URLs independently.
+Produce self-contained, verifiable release assets for the supported platforms. PondPilot consumes only the signed manifest and must never construct download URLs independently. The v0.1 release supports macOS AMD64/ARM64 and Linux AMD64. Windows AMD64 moved to a follow-up after native CI proved that `duckdb-go` requires MinGW extensions while the pinned upstream bundle is MSVC-only.
 
-- [x] Build release binaries for macOS AMD64, macOS ARM64, Linux AMD64, and Windows AMD64 with reproducible version metadata.
+- [x] Build release binaries for macOS AMD64, macOS ARM64, and Linux AMD64 with reproducible version metadata.
 - [x] Bundle the exact matching signed `postgres` and `quack` extension artifacts, their upstream licenses, and recorded SHA-256 hashes beside each binary.
 - [x] Make startup load only the bundled extension directory and work without downloading executable code.
 - [x] Generate archives, checksums, provenance, licenses, and an SBOM through a pinned release toolchain.
 - [x] Sign release artifacts and the release manifest using the project's approved signing mechanism; document key rotation and verification.
 - [x] Define the release manifest from `protocol/v1`, including version, release channel, protocol range, assets, OS/architecture, minimum OS, hashes, signatures, and download URLs.
 - [ ] Publish the manifest both as a release asset and at the stable PondPilot-controlled URL consumed by the browser.
-- [x] Add native smoke jobs for macOS AMD64/ARM64, Linux AMD64, and Windows AMD64 that start QuackRidge, query identity, attach a test source where supported, and stop cleanly.
+- [x] Add native smoke jobs for macOS AMD64/ARM64 and Linux AMD64 that start QuackRidge, query identity, attach a test source where supported, and stop cleanly.
 - [x] Block publishing any platform asset whose native smoke test did not run and pass.
-- [x] Add initial installation paths for signed archives plus Homebrew and Windows package-manager manifests; keep service installation and automatic updates out of v1.
+- [x] Add initial installation paths for signed archives plus a Homebrew manifest; keep service installation and automatic updates out of v1.
+- [ ] Add Windows AMD64 packaging after a compatible signed DuckDB/Quack MinGW extension bundle is available and passes native smoke tests.
 - [ ] Test the exact downloaded release archive in the cross-repository PondPilot suite before promoting a prerelease.
 
 ### Task 12: Complete diagnostics, documentation, and the experimental v1 release

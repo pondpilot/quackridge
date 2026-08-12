@@ -6,7 +6,7 @@ or grant it operating-system permissions.
 
 ## Verify and install an archive
 
-Each release contains four native archives, `checksums.txt`, SPDX SBOMs, and
+Each release contains three native archives, `checksums.txt`, SPDX SBOMs, and
 Sigstore bundles. Verify an archive before extracting it:
 
 ```sh
@@ -20,10 +20,11 @@ sha256sum -c quackridge_0.1.0_linux_amd64.tar.gz.sha256
 
 Extract the archive and place its complete directory somewhere accessible only
 to your user. Do not separate the executable from its `extensions` directory.
-On macOS, the release also includes a Homebrew cask definition. On Windows, it
-includes WinGet manifests for a portable installation. These definitions use
-the same release-manifest URLs and hashes; their publication to third-party
-package repositories can lag the GitHub release.
+On macOS, the release also includes a Homebrew cask definition using the same
+release-manifest URLs and hashes. Its publication to a third-party package
+repository can lag the GitHub release. QuackRidge v0.1 does not publish a
+Windows archive because DuckDB's Go/MinGW build cannot load the available MSVC
+extension bundle.
 
 ## Create a read-only PostgreSQL role
 

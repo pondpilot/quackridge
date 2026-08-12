@@ -15,7 +15,7 @@ if [ -z "$platform" ]; then
     Linux/x86_64) platform=linux_amd64 ;;
     Darwin/x86_64) platform=osx_amd64 ;;
     Darwin/arm64) platform=osx_arm64 ;;
-    MINGW*/*|MSYS*/*|CYGWIN*/*) platform=windows_amd64 ;;
+    MINGW*/*|MSYS*/*|CYGWIN*/*) echo "Windows MinGW extension bundles are not available for DuckDB $duckdb_version" >&2; exit 2 ;;
     *) echo "unsupported extension platform: $os/$arch" >&2; exit 2 ;;
   esac
 fi
@@ -31,9 +31,6 @@ expected_hash() {
     osx_arm64/httpfs) echo 758acc0b0c4fbf09506f387ff6f52826b1038b7b6849ded39928d2f992945230 ;;
     osx_arm64/postgres_scanner) echo 4fb5079e67b00e6643e6ee91545a355010004d1dad50b43f1c060de0cb789c8e ;;
     osx_arm64/quack) echo a551db5ca9db6964a48f3c1f77076be0875bbdb0f335b139f77798c8fa92df51 ;;
-    windows_amd64/httpfs) echo bb4a9f2721c43439006e6e776364a748d2469f92dfe5e5ebe365ed10e2be0e78 ;;
-    windows_amd64/postgres_scanner) echo 65b31f002c70ac5f812d293b8552b977d1c0e6752d0a1127176454c8184ed001 ;;
-    windows_amd64/quack) echo ff5e61bd01ce6f4c32a27c22c6b73669031af295c7c8777e23c819f5c3f37d26 ;;
     *) echo "missing pinned checksum for $platform/$1" >&2; exit 2 ;;
   esac
 }

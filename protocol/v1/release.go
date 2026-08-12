@@ -42,11 +42,12 @@ func ValidateReleaseManifest(manifest ReleaseManifest) error {
 	if manifest.Protocol.Minimum < 1 || manifest.Protocol.Maximum < manifest.Protocol.Minimum {
 		return errors.New("release protocol range is invalid")
 	}
-	required := []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "windows/amd64"}
+	supported := []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "windows/amd64"}
+	required := []string{"darwin/amd64", "darwin/arm64", "linux/amd64"}
 	seen := make(map[string]struct{}, len(manifest.Assets))
 	for _, asset := range manifest.Assets {
 		target := asset.OS + "/" + asset.Arch
-		if !slices.Contains(required, target) {
+		if !slices.Contains(supported, target) {
 			return fmt.Errorf("release target %q is unsupported", target)
 		}
 		if _, exists := seen[target]; exists {
@@ -71,8 +72,10 @@ func ValidateReleaseManifest(manifest ReleaseManifest) error {
 			return fmt.Errorf("release target %q minimum OS is missing", target)
 		}
 	}
-	if len(seen) != len(required) {
-		return errors.New("release manifest does not contain every supported target")
+	for _, target := range required {
+		if _, exists := seen[target]; !exists {
+			return errors.New("release manifest does not contain every required target")
+		}
 	}
 	return nil
 }

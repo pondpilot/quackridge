@@ -44,11 +44,6 @@ jobs:
             arch: amd64
             extension_platform: linux_amd64
             binary: quackridge
-          - runner: windows-2022
-            os: windows
-            arch: amd64
-            extension_platform: windows_amd64
-            binary: quackridge.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     permissions:
@@ -167,12 +162,12 @@ jobs:
           go run ./cmd/releasemanifest --version "$version" --channel "$channel" --directory dist
           go run ./cmd/packagemanifests --manifest dist/release-manifest.json --output dist
           cosign sign-blob --yes --bundle dist/release-manifest.json.sigstore.json dist/release-manifest.json
-          (cd dist && sha256sum quackridge_*.tar.gz quackridge_*.zip release-manifest.json quackridge.rb PondPilot.QuackRidge*.yaml > checksums.txt)
+          (cd dist && sha256sum quackridge_*.tar.gz release-manifest.json quackridge.rb > checksums.txt)
           cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
       - name: Verify Sigstore identities and release contract
         shell: bash
         run: |
-          for asset in dist/quackridge_*.tar.gz dist/quackridge_*.zip dist/release-manifest.json dist/checksums.txt; do
+          for asset in dist/quackridge_*.tar.gz dist/release-manifest.json dist/checksums.txt; do
             cosign verify-blob --bundle "$asset.sigstore.json" \
               --certificate-identity-regexp '^https://github.com/pondpilot/quackridge/.github/workflows/release.yml@refs/(tags/v|heads/).+$' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com "$asset"
@@ -205,10 +200,6 @@ jobs:
             os: linux
             arch: amd64
             binary: quackridge
-          - runner: windows-2022
-            os: windows
-            arch: amd64
-            binary: quackridge.exe
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:

@@ -1,5 +1,5 @@
-// Command packagemanifests emits Homebrew and WinGet definitions from the
-// validated release manifest so package URLs and hashes cannot drift.
+// Command packagemanifests emits a Homebrew definition from the validated
+// release manifest so package URLs and hashes cannot drift.
 package main
 
 import (
@@ -46,14 +46,11 @@ func run(args []string) error {
 	for _, asset := range manifest.Assets {
 		assets[asset.OS+"/"+asset.Arch] = asset
 	}
-	values := map[string]any{"Version": manifest.Version, "DarwinAMD64": assets["darwin/amd64"], "DarwinARM64": assets["darwin/arm64"], "WindowsAMD64": assets["windows/amd64"]}
+	values := map[string]any{"Version": manifest.Version, "DarwinAMD64": assets["darwin/amd64"], "DarwinARM64": assets["darwin/arm64"]}
 	files := []struct {
 		name, body string
 	}{
 		{"quackridge.rb", homebrewTemplate},
-		{"PondPilot.QuackRidge.yaml", wingetVersionTemplate},
-		{"PondPilot.QuackRidge.installer.yaml", wingetInstallerTemplate},
-		{"PondPilot.QuackRidge.locale.en-US.yaml", wingetLocaleTemplate},
 	}
 	if err := os.MkdirAll(*output, 0o755); err != nil {
 		return err
@@ -98,39 +95,4 @@ const homebrewTemplate = `cask "quackridge" do
 
   caveats "QuackRidge is experimental and requires an explicitly read-only PostgreSQL role."
 end
-`
-
-const wingetVersionTemplate = `PackageIdentifier: PondPilot.QuackRidge
-PackageVersion: {{.Version}}
-DefaultLocale: en-US
-ManifestType: version
-ManifestVersion: 1.9.0
-`
-
-const wingetInstallerTemplate = `PackageIdentifier: PondPilot.QuackRidge
-PackageVersion: {{.Version}}
-InstallerType: zip
-NestedInstallerType: portable
-NestedInstallerFiles:
-  - RelativeFilePath: quackridge_{{.Version}}_windows_amd64\quackridge.exe
-    PortableCommandAlias: quackridge
-Installers:
-  - Architecture: x64
-    InstallerUrl: {{.WindowsAMD64.URL}}
-    InstallerSha256: {{.WindowsAMD64.SHA256}}
-ManifestType: installer
-ManifestVersion: 1.9.0
-`
-
-const wingetLocaleTemplate = `PackageIdentifier: PondPilot.QuackRidge
-PackageVersion: {{.Version}}
-PackageLocale: en-US
-Publisher: PondPilot
-PackageName: QuackRidge
-License: Apache-2.0
-ShortDescription: Experimental local read-only PostgreSQL bridge for PondPilot
-PackageUrl: https://github.com/pondpilot/quackridge
-LicenseUrl: https://github.com/pondpilot/quackridge/blob/main/LICENSE
-ManifestType: defaultLocale
-ManifestVersion: 1.9.0
 `

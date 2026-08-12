@@ -14,9 +14,10 @@ The pinned experimental data plane intentionally advertises
 work after a browser cancellation or abandoned result. See the
 [security model](docs/security.md) before running untrusted workloads.
 
-The project is licensed under Apache-2.0. The supported v1 release targets are
-macOS AMD64, macOS ARM64, Linux AMD64, and Windows AMD64. An artifact is not
-supported until its native smoke test has passed.
+The project is licensed under Apache-2.0. The supported v0.1 release targets are
+macOS AMD64, macOS ARM64, and Linux AMD64. Windows remains a follow-up because
+DuckDB's Go/MinGW build cannot load the available MSVC extension bundle. An
+artifact is not supported until its native smoke test has passed.
 
 ## Development
 

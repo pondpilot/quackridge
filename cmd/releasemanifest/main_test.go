@@ -21,7 +21,6 @@ func TestVerifyManifestHashesArchiveContents(t *testing.T) {
 		{"darwin", "amd64", "quackridge_0.1.0_darwin_amd64.tar.gz"},
 		{"darwin", "arm64", "quackridge_0.1.0_darwin_arm64.tar.gz"},
 		{"linux", "amd64", "quackridge_0.1.0_linux_amd64.tar.gz"},
-		{"windows", "amd64", "quackridge_0.1.0_windows_amd64.zip"},
 	}
 	for _, target := range targets {
 		contents := []byte("archive-" + target.name)

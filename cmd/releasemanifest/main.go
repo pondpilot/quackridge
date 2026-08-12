@@ -44,15 +44,11 @@ func run(args []string) error {
 	}
 	targets := []struct{ os, arch, minimum string }{
 		{"darwin", "amd64", "macOS 13"}, {"darwin", "arm64", "macOS 13"},
-		{"linux", "amd64", "glibc 2.35"}, {"windows", "amd64", "Windows 10"},
+		{"linux", "amd64", "glibc 2.35"},
 	}
 	baseURL := fmt.Sprintf("https://github.com/%s/releases/download/v%s/", *repository, *version)
 	for _, target := range targets {
-		extension := ".tar.gz"
-		if target.os == "windows" {
-			extension = ".zip"
-		}
-		name := fmt.Sprintf("quackridge_%s_%s_%s%s", *version, target.os, target.arch, extension)
+		name := fmt.Sprintf("quackridge_%s_%s_%s.tar.gz", *version, target.os, target.arch)
 		digest, err := readChecksum(filepath.Join(*directory, name+".sha256"), name)
 		if err != nil {
 			return err

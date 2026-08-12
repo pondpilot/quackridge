@@ -12,7 +12,7 @@ func TestValidateReleaseManifest(t *testing.T) {
 		Version: "0.1.0-rc.1", Channel: "prerelease",
 		Protocol: protocol.ProtocolRange{Minimum: 1, Maximum: 1},
 	}
-	for _, target := range []struct{ os, arch string }{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}, {"windows", "amd64"}} {
+	for _, target := range []struct{ os, arch string }{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}} {
 		manifest.Assets = append(manifest.Assets, protocol.ReleaseAsset{
 			OS: target.os, Arch: target.arch, URL: "https://example.test/quackridge-" + target.os + "-" + target.arch,
 			SHA256: strings.Repeat("a", 64), Signature: "https://example.test/asset.sigstore.json", MinimumOS: "test",
