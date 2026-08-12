@@ -203,6 +203,35 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	if _, err := client.ExecContext(ctx, attach); err != nil {
 		t.Fatal(err)
 	}
+	proxySetup := []string{
+		fmt.Sprintf("CREATE TEMPORARY SECRET qr_proxy (TYPE quack, TOKEN '%s', SCOPE '%s')", runtime.Token(), endpoint),
+		"ATTACH ':memory:' AS warehouse_remote",
+		"CREATE SCHEMA warehouse_remote.sales",
+		fmt.Sprintf(`CREATE VIEW warehouse_remote.sales.customers AS
+			SELECT * FROM quack_query('%s', 'SELECT * FROM warehouse.sales.customers', disable_ssl => true)`, endpoint),
+		fmt.Sprintf(`CREATE VIEW warehouse_remote.sales.orders AS
+			SELECT * FROM quack_query('%s', 'SELECT * FROM warehouse.sales.orders', disable_ssl => true)`, endpoint),
+	}
+	for _, statement := range proxySetup {
+		if _, err := client.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var federatedCustomer string
+	if err := client.QueryRowContext(ctx, `
+		WITH local_labels(id, label) AS (
+			VALUES ('00000000-0000-0000-0000-000000000001'::UUID, 'browser-local')
+		)
+		SELECT labels.label || ':' || customers.name, sum(orders.amount)::VARCHAR
+		FROM local_labels labels
+		JOIN warehouse_remote.sales.customers customers USING (id)
+		JOIN warehouse_remote.sales.orders orders ON orders.customer_id = customers.id
+		GROUP BY labels.label, customers.name`).Scan(&federatedCustomer, &total); err != nil {
+		t.Fatal(err)
+	}
+	if federatedCustomer != "browser-local:Ada" || total != "19.75" {
+		t.Fatalf("federated Quack result = %q %q", federatedCustomer, total)
+	}
 	if err := client.QueryRowContext(ctx, `SELECT customer, total::VARCHAR FROM ridge.query(
 		'SELECT c.name AS customer, SUM(o.amount) AS total
 		 FROM warehouse.sales.customers c
