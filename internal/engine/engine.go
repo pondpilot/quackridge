@@ -429,11 +429,18 @@ func loadExtension(ctx context.Context, db *sql.DB, path string) error {
 	if err != nil || !info.Mode().IsRegular() {
 		return &quackridge.Error{Code: quackridge.CodeInternal, Message: "required extension is unavailable", Cause: err}
 	}
-	quoted := strings.ReplaceAll(path, "'", "''")
+	// DuckDB accepts forward slashes on every supported platform. Normalizing
+	// avoids interpreting Windows path separators as SQL string escapes.
+	quoted := extensionSQLPath(path)
 	if _, err := db.ExecContext(ctx, "LOAD '"+quoted+"'"); err != nil {
 		return internal("load required extension", err)
 	}
 	return nil
+}
+
+func extensionSQLPath(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	return strings.ReplaceAll(path, "'", "''")
 }
 
 func verifyVersionPair(ctx context.Context, db *sql.DB) error {

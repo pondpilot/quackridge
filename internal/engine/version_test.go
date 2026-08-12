@@ -6,6 +6,13 @@ import (
 	quackridge "github.com/pondpilot/quackridge"
 )
 
+func TestExtensionSQLPathUsesPortableSeparators(t *testing.T) {
+	path := `D:\a\quackridge\build\extensions\quack.duckdb_extension`
+	if got := extensionSQLPath(path); got != "D:/a/quackridge/build/extensions/quack.duckdb_extension" {
+		t.Fatalf("extension SQL path = %q", got)
+	}
+}
+
 func TestValidateVersionPair(t *testing.T) {
 	valid := quackridge.ExtensionVersions()
 	if err := validateVersionPair("v1.5.5", valid); err != nil {
