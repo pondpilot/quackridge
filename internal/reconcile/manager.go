@@ -44,6 +44,17 @@ type Failure struct {
 	Err  error
 }
 
+type SourceDiagnostic struct {
+	ID       string   `json:"id"`
+	Health   string   `json:"health"`
+	ReadOnly bool     `json:"read_only"`
+	Warnings []string `json:"warnings"`
+}
+
+type postureInspector interface {
+	PostureWarnings(context.Context, source.Definition) ([]string, error)
+}
+
 // Manager validates an entire candidate configuration and every credential
 // before mutating healthy attachments. Apply operations carry rollback actions
 // so a failed reload preserves the previous active set.
@@ -126,6 +137,37 @@ func (m *Manager) Validate(ctx context.Context, configured config.Source, creden
 		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
 		Type: configured.Type, Enabled: configured.Enabled,
 	})
+}
+
+// Diagnostics performs bounded live health and read-only-posture checks without
+// returning credentials, connection strings, or adapter error details.
+func (m *Manager) Diagnostics(ctx context.Context) []SourceDiagnostic {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0, len(m.active))
+	for id := range m.active {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	result := make([]SourceDiagnostic, 0, len(ids))
+	for _, id := range ids {
+		active := m.active[id]
+		diagnostic := SourceDiagnostic{ID: id, Health: "ready", ReadOnly: true, Warnings: []string{}}
+		if err := active.adapter.Health(ctx, active.definition); err != nil {
+			diagnostic.Health = "unavailable"
+			diagnostic.Warnings = append(diagnostic.Warnings, "source connectivity check failed")
+		}
+		if inspector, ok := active.adapter.(postureInspector); ok {
+			warnings, err := inspector.PostureWarnings(ctx, active.definition)
+			if err != nil {
+				diagnostic.Warnings = append(diagnostic.Warnings, "source read-only posture could not be inspected")
+			} else {
+				diagnostic.Warnings = append(diagnostic.Warnings, warnings...)
+			}
+		}
+		result = append(result, diagnostic)
+	}
+	return result
 }
 
 func (m *Manager) prepare(ctx context.Context) (map[string]preparedSource, error) {

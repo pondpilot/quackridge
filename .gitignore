@@ -1,6 +1,7 @@
 /bin/
 /dist/
 /extensions/
+/quackridge
 *.duckdb
 *.duckdb.wal
 *.test

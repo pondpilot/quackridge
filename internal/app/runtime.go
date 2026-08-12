@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	quackridge "github.com/pondpilot/quackridge"
 	"github.com/pondpilot/quackridge/internal/config"
@@ -110,7 +111,19 @@ func (r *Runtime) Sources() []quackridge.SourceStatus {
 func (r *Runtime) Token() string                         { return r.engine.Token() }
 func (r *Runtime) RotateToken(ctx context.Context) error { return r.engine.RotateToken(ctx) }
 func (r *Runtime) Diagnostics(ctx context.Context) (map[string]any, error) {
-	return r.engine.Diagnostics(ctx)
+	diagnosticCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	diagnostics, err := r.engine.Diagnostics(diagnosticCtx)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics["sources"] = r.Sources()
+	diagnostics["source_diagnostics"] = r.manager.Diagnostics(diagnosticCtx)
+	diagnostics["product_version"] = quackridge.Version
+	diagnostics["protocol_version"] = quackridge.ProtocolVersion
+	diagnostics["capabilities"] = quackridge.Capabilities()
+	diagnostics["extension_versions"] = quackridge.ExtensionVersions()
+	return diagnostics, nil
 }
 
 type StoreLoader struct{ Store config.Store }

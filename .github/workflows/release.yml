@@ -1,0 +1,254 @@
+name: Native release
+
+on:
+  push:
+    tags: ['v0.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        type: string
+      channel:
+        description: Manifest channel
+        required: true
+        default: prerelease
+        type: choice
+        options: [prerelease, stable]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_DATE_EPOCH: '0'
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }} native build and smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            os: darwin
+            arch: amd64
+            extension_platform: osx_amd64
+            binary: quackridge
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            extension_platform: osx_arm64
+            binary: quackridge
+          - runner: ubuntu-22.04
+            os: linux
+            arch: amd64
+            extension_platform: linux_amd64
+            binary: quackridge
+          - runner: windows-2022
+            os: windows
+            arch: amd64
+            extension_platform: windows_amd64
+            binary: quackridge.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Resolve and validate version
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${INPUT_VERSION:-${TAG#v}}"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "invalid release version" >&2; exit 2 ;;
+          esac
+          test "$(go env GOOS)" = "${{ matrix.os }}"
+          test "$(go env GOARCH)" = "${{ matrix.arch }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Fetch and verify pinned signed extensions
+        shell: bash
+        env:
+          QUACKRIDGE_EXTENSION_PLATFORM: ${{ matrix.extension_platform }}
+        run: ./scripts/fetch-extensions.sh build/extensions
+      - name: Build reproducibly
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir -p build/bin
+          go build -trimpath -buildvcs=false -ldflags="-s -w -X github.com/pondpilot/quackridge.Version=$VERSION" -o "build/bin/${{ matrix.binary }}" ./cmd/quackridge
+          "build/bin/${{ matrix.binary }}" version --json
+      - name: Native data-plane smoke test
+        shell: bash
+        env:
+          QUACKRIDGE_EXTENSION_DIR: ${{ github.workspace }}/build/extensions
+        run: go test -tags=integration -run TestQuackIdentityAndShutdown -count=1 ./internal/engine
+      - name: Linux PostgreSQL attach and query smoke test
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          QUACKRIDGE_EXTENSION_DIR: ${{ github.workspace }}/build/extensions
+        run: go test -tags=integration -run TestPostgresServerSideJoinAndMetadata -count=1 ./internal/engine
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d # v0.20.10
+        with:
+          file: build/bin/${{ matrix.binary }}
+          format: spdx-json
+          output-file: build/sbom.spdx.json
+          artifact-name: quackridge-${{ matrix.os }}-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          syft-version: v1.29.0
+      - name: Package deterministic archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: >-
+          go run ./cmd/releasepack --version "$VERSION" --os "${{ matrix.os }}"
+          --arch "${{ matrix.arch }}" --binary "build/bin/${{ matrix.binary }}"
+          --extensions build/extensions --sbom build/sbom.spdx.json --output dist
+      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - name: Keyless-sign archive
+        shell: bash
+        run: |
+          archive=$(find dist -maxdepth 1 -type f ! -name '*.sha256' -print -quit)
+          cosign sign-blob --yes --bundle "$archive.sigstore.json" "$archive"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: Verify and assemble signed manifest
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - name: Build manifest and complete checksums
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${INPUT_VERSION:-${TAG#v}}"
+          channel="${INPUT_CHANNEL:-}"
+          if [ -z "$channel" ]; then
+            case "$version" in
+              *-*) channel=prerelease ;;
+              *) channel=stable ;;
+            esac
+          fi
+          go run ./cmd/releasemanifest --version "$version" --channel "$channel" --directory dist
+          go run ./cmd/packagemanifests --manifest dist/release-manifest.json --output dist
+          cosign sign-blob --yes --bundle dist/release-manifest.json.sigstore.json dist/release-manifest.json
+          (cd dist && sha256sum quackridge_*.tar.gz quackridge_*.zip release-manifest.json quackridge.rb PondPilot.QuackRidge*.yaml > checksums.txt)
+          cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
+      - name: Verify Sigstore identities and release contract
+        shell: bash
+        run: |
+          for asset in dist/quackridge_*.tar.gz dist/quackridge_*.zip dist/release-manifest.json dist/checksums.txt; do
+            cosign verify-blob --bundle "$asset.sigstore.json" \
+              --certificate-identity-regexp '^https://github.com/pondpilot/quackridge/.github/workflows/release.yml@refs/(tags/v|heads/).+$' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$asset"
+          done
+          ./scripts/audit-release-assets.sh dist
+          ./scripts/verify-release-assets.sh dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release-set
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  archive-smoke:
+    name: ${{ matrix.os }}-${{ matrix.arch }} exact archive smoke
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            os: darwin
+            arch: amd64
+            binary: quackridge
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            binary: quackridge
+          - runner: ubuntu-22.04
+            os: linux
+            arch: amd64
+            binary: quackridge
+          - runner: windows-2022
+            os: windows
+            arch: amd64
+            binary: quackridge.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release-set
+          path: dist
+      - name: Extract and run the exact signed archive
+        shell: bash
+        run: |
+          archive=$(find dist -maxdepth 1 -type f -name "*_${{ matrix.os }}_${{ matrix.arch }}.*" ! -name '*.sha256' ! -name '*.sigstore.json' -print -quit)
+          mkdir extracted
+          tar -xf "$archive" -C extracted
+          binary=$(find extracted -type f -name '${{ matrix.binary }}' -print -quit)
+          root=$(dirname "$binary")
+          "$binary" version --json
+          "$binary" doctor --config "$RUNNER_TEMP/quackridge-empty.json" --extensions "$root/extensions" --credential-provider environment --control "$RUNNER_TEMP/quackridge-missing-control" --json
+          go run ./cmd/releasesmoke --binary "$binary" --extensions "$root/extensions"
+
+  publish:
+    name: Publish only after every native smoke passes
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: archive-smoke
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-release-set
+          path: dist
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*

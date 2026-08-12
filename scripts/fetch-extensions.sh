@@ -2,6 +2,9 @@
 set -eu
 
 duckdb_version=1.5.5
+httpfs_version=827222f
+postgres_scanner_version=41223e5
+quack_version=c154811
 output_dir=${1:-extensions}
 platform=${QUACKRIDGE_EXTENSION_PLATFORM:-}
 
@@ -41,6 +44,14 @@ digest() {
 }
 
 mkdir -p "$output_dir"
+: > "$output_dir/extensions.sha256"
+: > "$output_dir/extensions.upstream"
+cat > "$output_dir/extensions.versions" <<EOF
+duckdb $duckdb_version
+httpfs $httpfs_version
+postgres_scanner $postgres_scanner_version
+quack $quack_version
+EOF
 for extension in httpfs postgres_scanner quack; do
   url="https://extensions.duckdb.org/v${duckdb_version}/${platform}/${extension}.duckdb_extension.gz"
   archive="$output_dir/${extension}.duckdb_extension.gz"
@@ -55,5 +66,10 @@ for extension in httpfs postgres_scanner quack; do
   fi
   mv "$temporary" "$archive"
   gzip -dc "$archive" > "$output_dir/${extension}.duckdb_extension"
+  decompressed_hash=$(digest "$output_dir/${extension}.duckdb_extension")
+  printf '%s  %s\n' "$decompressed_hash" "${extension}.duckdb_extension" >> "$output_dir/extensions.sha256"
+  printf '%s\t%s\t%s\n' "$extension" "$url" "$expected" >> "$output_dir/extensions.upstream"
   printf '%s  %s\n' "$expected" "${extension}.duckdb_extension.gz"
 done
+versions_hash=$(digest "$output_dir/extensions.versions")
+printf '%s  %s\n' "$versions_hash" "extensions.versions" >> "$output_dir/extensions.sha256"

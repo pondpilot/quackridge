@@ -19,6 +19,8 @@ func (l *testLoader) Load() (config.Document, error) { return l.document.Clone()
 type adapterBehavior struct {
 	FailValidation bool `json:"fail_validation"`
 	FailAttach     bool `json:"fail_attach"`
+	FailHealth     bool `json:"fail_health"`
+	PostureWarning bool `json:"posture_warning"`
 }
 
 type adapterEvents struct {
@@ -62,7 +64,18 @@ func (a *testAdapter) Attach(_ context.Context, definition source.Definition) er
 func (*testAdapter) Metadata(context.Context, source.Definition) ([]source.MetadataRow, error) {
 	return nil, nil
 }
-func (*testAdapter) Health(context.Context, source.Definition) error { return nil }
+func (a *testAdapter) Health(context.Context, source.Definition) error {
+	if a.behavior.FailHealth {
+		return errors.New("private connectivity detail")
+	}
+	return nil
+}
+func (a *testAdapter) PostureWarnings(context.Context, source.Definition) ([]string, error) {
+	if a.behavior.PostureWarning {
+		return []string{"PostgreSQL role has elevated role attributes"}, nil
+	}
+	return nil, nil
+}
 func (a *testAdapter) Cleanup(_ context.Context, definition source.Definition) error {
 	a.events.mu.Lock()
 	defer a.events.mu.Unlock()
@@ -153,5 +166,27 @@ func TestBootstrapKeepsHealthySourcesWhenOneFails(t *testing.T) {
 	defer events.mu.Unlock()
 	if len(events.attached) != 1 || events.attached[0] != "warehouse" {
 		t.Fatalf("attached = %v", events.attached)
+	}
+}
+
+func TestDiagnosticsSanitizesHealthAndReportsPosture(t *testing.T) {
+	loader := &testLoader{document: config.Document{Version: config.CurrentVersion, Sources: []config.Source{
+		configured("warehouse", adapterBehavior{FailHealth: true, PostureWarning: true}),
+	}}}
+	credentials := secrets.NewMemory()
+	_ = credentials.Put(t.Context(), "source/warehouse", []byte("password"))
+	manager, err := New(loader, credentials, testFactory{events: &adapterEvents{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Bootstrap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := manager.Diagnostics(t.Context())
+	if len(diagnostics) != 1 || diagnostics[0].Health != "unavailable" || !diagnostics[0].ReadOnly {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if len(diagnostics[0].Warnings) != 2 || diagnostics[0].Warnings[0] != "source connectivity check failed" {
+		t.Fatalf("warnings = %#v", diagnostics[0].Warnings)
 	}
 }

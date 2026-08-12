@@ -36,3 +36,13 @@ stopped. Closing or abandoning a result can leave work running until it finishes
 or reaches a memory or temporary-storage limit. See the
 [cancellation gate](spikes/security-cancellation-gate.md) for evidence and the
 accepted experimental deviation.
+
+## Non-goals and trusted boundary
+
+Version 0.1 does not provide write access, cross-engine joins, remote Quack
+exposure, multi-user sharing, background service installation, automatic
+updates, a native menu-bar application, or adapters other than PostgreSQL. The
+local operating-system user and the QuackRidge executable/extension directory
+are trusted. Browser content, pairing input, tokens, SQL, PostgreSQL responses,
+and network failures are untrusted. QuackRidge is a local isolation layer, not
+a multi-tenant security boundary.

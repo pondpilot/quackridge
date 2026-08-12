@@ -29,7 +29,7 @@ Run from the QuackRidge repository unless a different directory is specified:
 Create the independent QuackRidge project, establish its public package boundary, and make the protocol contract testable before database code is introduced. This task also creates the remote repository and baseline CI needed by every later task.
 
 - [x] Create the public `pondpilot/quackridge` GitHub repository with `main` as its default branch, Apache-2.0 licensing, an accurate description, and relevant DuckDB/PostgreSQL/PondPilot topics.
-- [x] Initialize the local repository with Go module path `github.com/pondpilot/quackridge`; preserve this plan under `docs-plans/`.
+- [x] Initialize the local repository with Go module path `github.com/pondpilot/quackridge`; preserve this plan under `docs/plans/`.
 - [x] Add the Apache-2.0 `LICENSE`, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.gitignore`, `.editorconfig`, and an experimental-status notice.
 - [x] Create the root `quackridge` facade package, the `cmd/quackridge` command skeleton, and empty `internal/engine`, `internal/source`, `internal/policy`, `internal/config`, `internal/secrets`, `internal/control`, and `internal/pairing` boundaries.
 - [x] Add `protocol/v1` machine-readable definitions for identity, capabilities, metadata rows, pairing responses, stable error codes, and release manifests.
@@ -134,76 +134,76 @@ Convert the spike's behavior into a compatibility-tested v1 contract. PondPilot 
 
 Represent QuackRidge as a distinct PondPilot data-source type that reuses generic Quack attachment primitives but has different execution semantics. Add an installation and pairing flow without allowing the browser to silently install native code.
 
-- [ ] Import or sync the pinned `protocol/v1` schemas and fixtures into PondPilot with a script that records the originating QuackRidge tag and fails on unreviewed drift.
-- [ ] Add a `QuackRidgeConnection` model with endpoint, alias, protocol version, capabilities, connection state, timestamps, and an encrypted secret reference; do not duplicate the Quack token in persisted plain state.
-- [ ] Reuse hardened Quack extension loading, URI validation, token resolution, attach/detach, timeout, and reconnect helpers where their semantics match.
-- [ ] Fetch and validate the signed QuackRidge release manifest, including protocol range, channel, platform assets, hashes, signatures, and minimum OS versions.
-- [ ] Add conservative platform detection for macOS AMD64/ARM64, Linux AMD64, and Windows AMD64 with a visible manual alternative selector.
-- [ ] Add an install screen explaining that the browser downloads but cannot launch/install QuackRidge, linking only to manifest-validated signed assets.
-- [ ] Add the one-time pairing flow with strict origin behavior, expiry handling, manual URI/token fallback, and useful recovery instructions.
-- [ ] Identify QuackRidge through `whoami()` after attach and reject generic or incompatible Quack servers from the QuackRidge flow.
-- [ ] Persist the token through PondPilot's encrypted secret store and restore/reconnect without placing it in URLs, logs, notifications, or analytics.
-- [ ] Add unit tests for manifest validation, platform selection, identity/capability negotiation, persistence, reconnect, expiry, and sanitized failures.
+- [x] Import or sync the pinned `protocol/v1` schemas and fixtures into PondPilot with a script that records the originating QuackRidge tag and fails on unreviewed drift.
+- [x] Add a `QuackRidgeConnection` model with endpoint, alias, protocol version, capabilities, connection state, timestamps, and an encrypted secret reference; do not duplicate the Quack token in persisted plain state.
+- [x] Reuse hardened Quack extension loading, URI validation, token resolution, attach/detach, timeout, and reconnect helpers where their semantics match.
+- [x] Fetch and validate the signed QuackRidge release manifest, including protocol range, channel, platform assets, hashes, signatures, and minimum OS versions.
+- [x] Add conservative platform detection for macOS AMD64/ARM64, Linux AMD64, and Windows AMD64 with a visible manual alternative selector.
+- [x] Add an install screen explaining that the browser downloads but cannot launch/install QuackRidge, linking only to manifest-validated signed assets.
+- [x] Add the one-time pairing flow with strict origin behavior, expiry handling, manual URI/token fallback, and useful recovery instructions.
+- [x] Identify QuackRidge through `whoami()` after attach and reject generic or incompatible Quack servers from the QuackRidge flow.
+- [x] Persist the token through PondPilot's encrypted secret store and restore/reconnect without placing it in URLs, logs, notifications, or analytics.
+- [x] Add unit tests for manifest validation, platform selection, identity/capability negotiation, persistence, reconnect, expiry, and sanitized failures.
 
 ### Task 9: Route PondPilot queries and metadata through QuackRidge
 
 Add the explicit execution target that solves the multi-streaming-scan limitation. Each validated PondPilot statement must execute as one server-side QuackRidge query while retaining existing editor behavior and per-tab session pinning.
 
-- [ ] Add QuackRidge to script-session target selection and make the active target visually explicit in the editor toolbar.
-- [ ] Continue using PondPilot's existing statement splitting and validation, then safely quote and send each complete allowed statement through the attached catalog's `query(...)` macro.
-- [ ] Use the tab's pinned DuckDB-WASM connection so Quack's attached server session remains stable across statements, transactions, cancellation, and temporary objects.
-- [ ] Prevent bridge-targeted statements from using direct remote table scans internally and reject unsupported browser-local/QuackRidge cross-engine queries with a clear v1 limitation.
-- [ ] Query the QuackRidge metadata relation for Data Explorer instead of relying on `current_database()` or generic DuckDB internal catalog inference.
-- [ ] Route table previews, row counts, column summaries, statistics, and exports as complete server-side statements through the same execution contract.
-- [ ] Map QuackRidge error codes to existing query error UI without exposing credentials, raw connection strings, or internal filesystem paths.
-- [ ] Advertise `cancellation_noop`, disable the editor cancellation action for QuackRidge, and continue showing timed-out, disconnected, and resource-limited states distinctly.
-- [ ] Ensure generic Quack connections retain their current behavior and tests.
-- [ ] Add unit tests for statement wrapping/escaping, target selection, metadata mapping, capability failures, cross-engine rejection, error mapping, and cancellation state.
+- [x] Add QuackRidge to script-session target selection and make the active target visually explicit in the editor toolbar.
+- [x] Continue using PondPilot's existing statement splitting and validation, then safely quote and send each complete allowed statement through the attached catalog's `query(...)` macro.
+- [x] Use the tab's pinned DuckDB-WASM connection so Quack's attached server session remains stable across statements, transactions, cancellation, and temporary objects.
+- [x] Prevent bridge-targeted statements from using direct remote table scans internally and reject unsupported browser-local/QuackRidge cross-engine queries with a clear v1 limitation.
+- [x] Query the QuackRidge metadata relation for Data Explorer instead of relying on `current_database()` or generic DuckDB internal catalog inference.
+- [x] Route table previews, row counts, column summaries, statistics, and exports as complete server-side statements through the same execution contract.
+- [x] Map QuackRidge error codes to existing query error UI without exposing credentials, raw connection strings, or internal filesystem paths.
+- [x] Advertise `cancellation_noop`, disable the editor cancellation action for QuackRidge, and continue showing timed-out, disconnected, and resource-limited states distinctly.
+- [x] Ensure generic Quack connections retain their current behavior and tests.
+- [x] Add unit tests for statement wrapping/escaping, target selection, metadata mapping, capability failures, cross-engine rejection, error mapping, and cancellation state.
 
 ### Task 10: Build cross-repository end-to-end and compatibility testing
 
 Exercise the actual browser-to-QuackRidge-to-PostgreSQL path with no mocked data plane. These tests are the evidence that credentials stay local, joins execute server-side, metadata renders, cancellation works, and cleanup is complete.
 
-- [ ] Add a QuackRidge test harness that starts a disposable PostgreSQL container, creates read-only fixtures, allocates free loopback ports, starts the built binary, and waits on identity/health readiness.
-- [ ] Add PondPilot Playwright helpers that pair with the real process without embedding static credentials in screenshots, traces, or test reports.
-- [ ] Test installation-manifest selection separately from native installation so CI never executes an untrusted downloaded binary.
+- [x] Add a QuackRidge test harness that starts a disposable PostgreSQL container, creates read-only fixtures, allocates free loopback ports, starts the built binary, and waits on identity/health readiness.
+- [x] Add PondPilot Playwright helpers that pair with the real process without embedding static credentials in screenshots, traces, or test reports.
+- [x] Test installation-manifest selection separately from native installation so CI never executes an untrusted downloaded binary.
 - [ ] Test successful pairing, source appearance, complete schema/table/column trees, previews, single-table queries, multi-table joins, exports, and browser reload/reconnect.
 - [ ] Test wrong/expired/replayed pairing nonces, wrong Quack token, incompatible protocol, unavailable PostgreSQL, partial-source failure, and token rotation.
-- [ ] Test that QuackRidge visibly disables cancellation and never claims server-side reclamation while `cancellation_noop` is advertised.
-- [ ] Test denied DML, DDL, attach, extension, filesystem, nested pass-through, and configuration statements from the browser.
+- [x] Test that QuackRidge visibly disables cancellation and never claims server-side reclamation while `cancellation_noop` is advertised.
+- [x] Test denied DML, DDL, attach, extension, filesystem, nested pass-through, and configuration statements from the browser.
 - [ ] Test large streamed results with bounded process/browser memory and abandon a result mid-stream to verify cleanup.
 - [ ] Verify test teardown leaves no QuackRidge/PostgreSQL processes, containers, ports, temporary files, or credential entries.
-- [ ] Add PondPilot CI that builds or downloads a pinned QuackRidge artifact and runs the dedicated suite on Linux AMD64.
-- [ ] Add scheduled compatibility CI against the newest QuackRidge prerelease without allowing failures to silently update the pinned supported version.
+- [x] Add PondPilot CI that builds or downloads a pinned QuackRidge artifact and runs the dedicated suite on Linux AMD64.
+- [x] Add scheduled compatibility CI against the newest QuackRidge prerelease without allowing failures to silently update the pinned supported version.
 
 ### Task 11: Package, sign, and publish QuackRidge artifacts
 
 Produce self-contained, verifiable release assets for the approved v1 platforms. PondPilot consumes only the signed manifest and must never construct download URLs independently.
 
-- [ ] Build release binaries for macOS AMD64, macOS ARM64, Linux AMD64, and Windows AMD64 with reproducible version metadata.
-- [ ] Bundle the exact matching signed `postgres` and `quack` extension artifacts, their upstream licenses, and recorded SHA-256 hashes beside each binary.
-- [ ] Make startup load only the bundled extension directory and work without downloading executable code.
-- [ ] Generate archives, checksums, provenance, licenses, and an SBOM through a pinned release toolchain.
-- [ ] Sign release artifacts and the release manifest using the project's approved signing mechanism; document key rotation and verification.
-- [ ] Define the release manifest from `protocol/v1`, including version, release channel, protocol range, assets, OS/architecture, minimum OS, hashes, signatures, and download URLs.
+- [x] Build release binaries for macOS AMD64, macOS ARM64, Linux AMD64, and Windows AMD64 with reproducible version metadata.
+- [x] Bundle the exact matching signed `postgres` and `quack` extension artifacts, their upstream licenses, and recorded SHA-256 hashes beside each binary.
+- [x] Make startup load only the bundled extension directory and work without downloading executable code.
+- [x] Generate archives, checksums, provenance, licenses, and an SBOM through a pinned release toolchain.
+- [x] Sign release artifacts and the release manifest using the project's approved signing mechanism; document key rotation and verification.
+- [x] Define the release manifest from `protocol/v1`, including version, release channel, protocol range, assets, OS/architecture, minimum OS, hashes, signatures, and download URLs.
 - [ ] Publish the manifest both as a release asset and at the stable PondPilot-controlled URL consumed by the browser.
-- [ ] Add native smoke jobs for macOS AMD64/ARM64, Linux AMD64, and Windows AMD64 that start QuackRidge, query identity, attach a test source where supported, and stop cleanly.
-- [ ] Block publishing any platform asset whose native smoke test did not run and pass.
-- [ ] Add initial installation paths for signed archives plus Homebrew and Windows package-manager manifests; keep service installation and automatic updates out of v1.
+- [x] Add native smoke jobs for macOS AMD64/ARM64, Linux AMD64, and Windows AMD64 that start QuackRidge, query identity, attach a test source where supported, and stop cleanly.
+- [x] Block publishing any platform asset whose native smoke test did not run and pass.
+- [x] Add initial installation paths for signed archives plus Homebrew and Windows package-manager manifests; keep service installation and automatic updates out of v1.
 - [ ] Test the exact downloaded release archive in the cross-repository PondPilot suite before promoting a prerelease.
 
 ### Task 12: Complete diagnostics, documentation, and the experimental v1 release
 
 Close the feature with user-facing operational guidance and mechanically verified acceptance evidence. Release QuackRidge before enabling its dependent PondPilot UI so the browser never advertises an unavailable compatible artifact.
 
-- [ ] Complete `quackridge doctor` checks for version compatibility, extension hashes, loopback ports, credential-store access, source connectivity/read-only posture, active limits, and stale process/socket cleanup.
-- [ ] Document installation, CLI commands, configuration locations, credential behavior, PostgreSQL read-only role setup, SSL modes, pairing, token rotation, troubleshooting, and complete uninstall steps.
-- [ ] Document the security model, trusted-input boundary, denied SQL surface, resource limits, local logging/redaction, and how to report vulnerabilities.
-- [ ] Document known Quack beta limitations, the supported DuckDB/Quack version pair, v1 non-goals, and the cancellation/security go/no-go evidence.
+- [x] Complete `quackridge doctor` checks for version compatibility, extension hashes, loopback ports, credential-store access, source connectivity/read-only posture, active limits, and stale process/socket cleanup.
+- [x] Document installation, CLI commands, configuration locations, credential behavior, PostgreSQL read-only role setup, SSL modes, pairing, token rotation, troubleshooting, and complete uninstall steps.
+- [x] Document the security model, trusted-input boundary, denied SQL surface, resource limits, local logging/redaction, and how to report vulnerabilities.
+- [x] Document known Quack beta limitations, the supported DuckDB/Quack version pair, v1 non-goals, and the cancellation/security go/no-go evidence.
 - [ ] Add PondPilot help content for download, installation, pairing, source health, reconnect, incompatibility, cancellation, and removal.
 - [ ] Run every Validation Command and record platform smoke-test links and cross-repository end-to-end evidence in the release checklist.
 - [ ] Verify no passwords, DSNs, tokens, SQL text, temporary credentials, or private database contents appear in config files, process arguments, logs, screenshots, traces, SBOMs, or release assets.
-- [ ] Publish a signed QuackRidge `v0.1.0` prerelease and stable manifest only after all go/no-go and platform gates pass.
+- [ ] Publish a signed QuackRidge `v0.1.0` release and stable manifest only after all go/no-go and platform gates pass.
 - [ ] Pin that QuackRidge release and protocol contract in PondPilot, run the full PondPilot CI suite, and release the browser integration behind an experimental label.
 - [ ] Update the approved design status and compatibility documentation with the shipped versions and any explicitly accepted deviations.
-- [ ] Leave write access, cross-engine joins, remote Quack exposure, multi-user sharing, service installation, automatic updates, the SwiftUI app, and non-PostgreSQL adapters for separately approved plans.
+- [x] Leave write access, cross-engine joins, remote Quack exposure, multi-user sharing, service installation, automatic updates, the SwiftUI app, and non-PostgreSQL adapters for separately approved plans.

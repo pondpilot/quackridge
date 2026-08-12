@@ -22,6 +22,7 @@ import (
 	"github.com/pondpilot/quackridge/internal/app"
 	"github.com/pondpilot/quackridge/internal/config"
 	"github.com/pondpilot/quackridge/internal/control"
+	"github.com/pondpilot/quackridge/internal/doctor"
 	"github.com/pondpilot/quackridge/internal/pairing"
 	"github.com/pondpilot/quackridge/internal/secrets"
 	"github.com/pondpilot/quackridge/internal/source"
@@ -450,26 +451,37 @@ func (a *App) status(args []string) error {
 
 func (a *App) doctor(args []string) error {
 	defaultConfig, _ := config.DefaultPath()
+	defaultControl, _ := control.DefaultAddress()
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(a.Stderr)
 	path := flags.String("config", defaultConfig, "configuration path")
+	address := flags.String("control", defaultControl, "control endpoint")
+	extensions := flags.String("extensions", os.Getenv("QUACKRIDGE_EXTENSION_DIR"), "verified extension directory")
+	credentialProvider := flags.String("credential-provider", "system", "system or environment")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	document, err := (config.Store{Path: *path}).Load()
-	if err != nil {
-		return err
-	}
-	checks := []map[string]any{
-		{"name": "config", "ok": true, "sources": len(document.Sources)},
-		{"name": "protocol", "ok": true, "version": quackridge.ProtocolVersion},
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	report := doctor.Run(ctx, doctor.Options{
+		ConfigPath: *path, ControlAddress: *address, ExtensionDir: *extensions,
+		CredentialProvider: *credentialProvider,
+	})
 	if *jsonOutput {
-		return json.NewEncoder(a.Stdout).Encode(map[string]any{"ok": true, "checks": checks})
+		if err := json.NewEncoder(a.Stdout).Encode(report); err != nil {
+			return err
+		}
+		if !report.OK {
+			return errors.New("one or more diagnostic checks failed")
+		}
+		return nil
 	}
-	for _, check := range checks {
-		fmt.Fprintf(a.Stdout, "ok\t%s\n", check["name"])
+	for _, check := range report.Checks {
+		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", check.Level, check.Name, check.Message)
+	}
+	if !report.OK {
+		return errors.New("one or more diagnostic checks failed")
 	}
 	return nil
 }
