@@ -93,6 +93,37 @@ func TestPairingRejectsConsumedNonce(t *testing.T) {
 	}
 }
 
+func TestPairingAllowsPrivateNetworkPreflight(t *testing.T) {
+	server, challenge, err := Start(Options{
+		Origins: []string{testOrigin}, TTL: time.Second,
+		Endpoint: "quack:127.0.0.1:9494", Token: "01234567890123456789012345678901",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodOptions, challenge.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", testOrigin)
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	request.Header.Set("Access-Control-Request-Headers", "content-type")
+	request.Header.Set("Access-Control-Request-Private-Network", "true")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d", response.StatusCode)
+	}
+	if got := response.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("private network permission = %q", got)
+	}
+}
+
 func pairRequest(t *testing.T, url, nonce, origin string) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"nonce": nonce})

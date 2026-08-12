@@ -113,6 +113,9 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 	if request.Method == http.MethodOptions {
 		writer.Header().Set("Access-Control-Allow-Methods", "POST")
 		writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if request.Header.Get("Access-Control-Request-Private-Network") == "true" {
+			writer.Header().Set("Access-Control-Allow-Private-Network", "true")
+		}
 		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
