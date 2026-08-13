@@ -39,6 +39,7 @@ func TestMySQLMariaDBAttachAndMetadata(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("docker", "stop", "-t", "1", container).Run() })
 
 	port := 0
+	ready := false
 	for ctx.Err() == nil {
 		if output, err := exec.CommandContext(ctx, "docker", "port", container, "3306/tcp").Output(); err == nil {
 			parts := strings.Split(strings.TrimSpace(string(output)), ":")
@@ -48,14 +49,15 @@ func TestMySQLMariaDBAttachAndMetadata(t *testing.T) {
 			connection, dialErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 200*time.Millisecond)
 			if dialErr == nil {
 				_ = connection.Close()
-				if exec.CommandContext(ctx, "docker", "exec", container, "mariadb-admin", "-uroot", "-p"+adminPassword, "ping", "--silent").Run() == nil {
+				if exec.CommandContext(ctx, "docker", "exec", container, "mariadb", "-uroot", "-p"+adminPassword, "-e", "SELECT 1").Run() == nil {
+					ready = true
 					break
 				}
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if port == 0 {
+	if !ready {
 		t.Fatal("MariaDB did not become ready")
 	}
 	fixture := "CREATE TABLE commerce.orders(id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO commerce.orders VALUES (1,25),(2,40); CREATE VIEW commerce.large_orders AS SELECT * FROM commerce.orders WHERE amount > 30; CREATE USER 'qr_reader'@'%' IDENTIFIED BY '" + readerPassword + "'; GRANT SELECT ON commerce.* TO 'qr_reader'@'%'; FLUSH PRIVILEGES;"
