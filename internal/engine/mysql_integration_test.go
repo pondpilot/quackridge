@@ -87,4 +87,12 @@ func TestMySQLMariaDBAttachAndMetadata(t *testing.T) {
 	if databaseType != "mariadb" {
 		t.Fatalf("database type = %q", databaseType)
 	}
+	var objectType string
+	if err := runtime.QueryRow(ctx, `SELECT object_type FROM quackridge_metadata_v2()
+		WHERE source_id = ? AND schema_name = 'commerce' AND object_name = 'large_orders' LIMIT 1`, definition.ID).Scan(&objectType); err != nil {
+		t.Fatal(err)
+	}
+	if objectType != "view" {
+		t.Fatalf("MariaDB view type = %q", objectType)
+	}
 }

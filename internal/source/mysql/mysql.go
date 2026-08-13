@@ -28,6 +28,7 @@ type Attacher interface {
 	Detach(context.Context, string, string) error
 	Query(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRow(context.Context, string, ...any) *sql.Row
+	RegisterObjectTypes(context.Context, string, []engine.ObjectType) error
 	UpdateDatabaseType(context.Context, string, string) error
 }
 
@@ -95,10 +96,37 @@ func (a *Adapter) Attach(ctx context.Context, definition source.Definition) erro
 	}
 	if definition.DatabaseType == "" && strings.Contains(strings.ToLower(version), "mariadb") {
 		if err := a.engine.UpdateDatabaseType(ctx, definition.ID, "mariadb"); err != nil {
+			_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
 			return err
 		}
 	}
+	if err := a.registerObjectTypes(ctx, definition); err != nil {
+		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
+		return err
+	}
 	return nil
+}
+
+func (a *Adapter) registerObjectTypes(ctx context.Context, definition source.Definition) error {
+	quotedAlias := strings.ReplaceAll(definition.Alias, "'", "''")
+	rows, err := a.engine.Query(ctx, "SELECT table_schema, table_name, object_type FROM mysql_query('"+quotedAlias+"', "+
+		"'SELECT table_schema, table_name, CASE WHEN table_type = ''VIEW'' THEN ''view'' ELSE ''table'' END AS object_type FROM information_schema.tables')")
+	if err != nil {
+		return fmt.Errorf("load MySQL object metadata: %w", err)
+	}
+	defer rows.Close()
+	var objects []engine.ObjectType
+	for rows.Next() {
+		var object engine.ObjectType
+		if err := rows.Scan(&object.Schema, &object.Name, &object.Type); err != nil {
+			return err
+		}
+		objects = append(objects, object)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return a.engine.RegisterObjectTypes(ctx, definition.ID, objects)
 }
 
 func (a *Adapter) Metadata(ctx context.Context, definition source.Definition) ([]source.MetadataRow, error) {

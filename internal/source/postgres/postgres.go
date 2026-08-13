@@ -96,6 +96,10 @@ func (a *Adapter) Attach(ctx context.Context, definition source.Definition) erro
 		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
 		return err
 	}
+	if err := a.registerObjectTypes(ctx, definition); err != nil {
+		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
+		return err
+	}
 	return nil
 }
 
