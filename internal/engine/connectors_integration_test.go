@@ -30,6 +30,7 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	directory := t.TempDir()
 	duckPath := filepath.Join(directory, "commerce.duckdb")
 	sqlitePath := filepath.Join(directory, "support.sqlite")
+	odbcSQLitePath := filepath.Join(directory, "support-odbc.sqlite")
 
 	fixture, err := sql.Open("duckdb", duckPath)
 	if err != nil {
@@ -47,9 +48,16 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	if err := fixture.Close(); err != nil {
 		t.Fatal(err)
 	}
+	sqliteFixture, err := os.ReadFile(sqlitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(odbcSQLitePath, sqliteFixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	runtime := engine.New()
-	if _, err := runtime.Start(ctx, quackridge.Options{ExtensionDir: extensionDir, AllowedPaths: []string{duckPath, sqlitePath}}); err != nil {
+	if _, err := runtime.Start(ctx, quackridge.Options{ExtensionDir: extensionDir, AllowedPaths: []string{duckPath, sqlitePath, odbcSQLitePath}}); err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.Stop(context.Background())
@@ -93,7 +101,7 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	if driver == "" {
 		t.Skip("SQLite ODBC driver is required")
 	}
-	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{"Database": sqlitePath}}, odbc.Credential{})
+	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{"Database": odbcSQLitePath}}, odbc.Credential{})
 	odbcDefinition := source.Definition{ID: "support_odbc", Name: "Support ODBC", Alias: "support_odbc", ConnectorType: "odbc", DatabaseType: "sqlite", Enabled: true}
 	if err := odbcAdapter.Attach(ctx, odbcDefinition); err != nil {
 		t.Fatal(err)
