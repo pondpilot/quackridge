@@ -82,9 +82,12 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	driver := ""
 	for _, line := range strings.Split(string(output), "\n") {
 		name := strings.Trim(strings.TrimSpace(line), "[]")
-		if strings.EqualFold(name, "SQLite3") || strings.EqualFold(name, "SQLite") {
+		if strings.EqualFold(name, "SQLite3") {
 			driver = name
 			break
+		}
+		if driver == "" && strings.EqualFold(name, "SQLite") {
+			driver = name
 		}
 	}
 	if driver == "" {
