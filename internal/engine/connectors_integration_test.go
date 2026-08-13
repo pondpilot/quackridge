@@ -102,7 +102,10 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	if driver == "" {
 		t.Skip("SQLite ODBC driver is required")
 	}
-	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{"Database": odbcSQLitePath}}, odbc.Credential{})
+	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{
+		"Database": odbcSQLitePath,
+		"BigInt":   "No",
+	}}, odbc.Credential{})
 	odbcDefinition := source.Definition{ID: "support_odbc", Name: "Support ODBC", Alias: "support_odbc", ConnectorType: "odbc", DatabaseType: "sqlite", Enabled: true}
 	if err := odbcAdapter.Attach(ctx, odbcDefinition); err != nil {
 		t.Fatalf("%v; cause: %v", err, errors.Unwrap(err))
