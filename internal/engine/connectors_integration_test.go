@@ -46,14 +46,10 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	if _, err := fixture.ExecContext(ctx, "ATTACH '"+strings.ReplaceAll(sqlitePath, "'", "''")+"' AS support (TYPE sqlite); CREATE TABLE support.ticket(order_id INTEGER, state VARCHAR); INSERT INTO support.ticket VALUES (1, 'open'), (2, 'closed'); DETACH support"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := fixture.ExecContext(ctx, "ATTACH '"+strings.ReplaceAll(odbcSQLitePath, "'", "''")+"' AS support_odbc (TYPE sqlite); CREATE TABLE support_odbc.ticket(order_id VARCHAR, state VARCHAR); INSERT INTO support_odbc.ticket VALUES ('1', 'open'), ('2', 'closed'); DETACH support_odbc"); err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.Close(); err != nil {
-		t.Fatal(err)
-	}
-	sqliteFixture, err := os.ReadFile(sqlitePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(odbcSQLitePath, sqliteFixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,15 +98,12 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	if driver == "" {
 		t.Skip("SQLite ODBC driver is required")
 	}
-	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{
-		"Database": odbcSQLitePath,
-		"BigInt":   "No",
-	}}, odbc.Credential{})
+	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{"Database": odbcSQLitePath}}, odbc.Credential{})
 	odbcDefinition := source.Definition{ID: "support_odbc", Name: "Support ODBC", Alias: "support_odbc", ConnectorType: "odbc", DatabaseType: "sqlite", Enabled: true}
 	if err := odbcAdapter.Attach(ctx, odbcDefinition); err != nil {
 		t.Fatalf("%v; cause: %v", err, errors.Unwrap(err))
 	}
-	if err := runtime.QueryRow(ctx, `SELECT sum(o.amount)::INTEGER FROM commerce.sales.orders o JOIN support_odbc.main.ticket t ON t.order_id = o.id WHERE t.state = 'closed'`).Scan(&total); err != nil {
+	if err := runtime.QueryRow(ctx, `SELECT sum(o.amount)::INTEGER FROM commerce.sales.orders o JOIN support_odbc.main.ticket t ON t.order_id = o.id::VARCHAR WHERE t.state = 'closed'`).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
 	if total != 40 {
