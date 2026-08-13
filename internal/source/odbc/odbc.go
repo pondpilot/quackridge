@@ -195,12 +195,19 @@ func (a *Adapter) connectionString() string {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		parts = append(parts, key+"={"+escape(a.config.Properties[key])+"}")
+		parts = append(parts, key+"="+connectionValue(a.config.Properties[key]))
 	}
 	return strings.Join(parts, ";")
 }
 
 func escape(value string) string { return strings.ReplaceAll(value, "}", "}}") }
+
+func connectionValue(value string) string {
+	if value == "" || value != strings.TrimSpace(value) || strings.ContainsAny(value, ";{}") {
+		return "{" + escape(value) + "}"
+	}
+	return value
+}
 
 func (a *Adapter) databaseType() string {
 	if a.config.DatabaseType == "" {

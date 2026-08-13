@@ -20,8 +20,21 @@ func TestValidateAndBuildCredentialFreeConnectionString(t *testing.T) {
 	if strings.Contains(connection, "reader") || strings.Contains(connection, "not-in-config") {
 		t.Fatal("credential leaked into persisted connection string")
 	}
-	if connection != "Driver={ODBC Driver 18 for SQL Server};Database={support};Server={localhost}" {
+	if connection != "Driver={ODBC Driver 18 for SQL Server};Database=support;Server=localhost" {
 		t.Fatalf("connection = %q", connection)
+	}
+}
+
+func TestConnectionValuesAreBracedOnlyWhenRequired(t *testing.T) {
+	for value, expected := range map[string]string{
+		"/tmp/support.sqlite": "/tmp/support.sqlite",
+		"with;separator":      "{with;separator}",
+		"closing}brace":       "{closing}}brace}",
+		" padded ":            "{ padded }",
+	} {
+		if got := connectionValue(value); got != expected {
+			t.Fatalf("connectionValue(%q) = %q, want %q", value, got, expected)
+		}
 	}
 }
 
