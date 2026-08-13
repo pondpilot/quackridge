@@ -37,6 +37,7 @@ type Runtime struct {
 	loadedExtensions map[string]bool
 	odbcConnection   *sql.Conn
 	odbcResolver     *odbcResolver
+	odbcHandles      map[string]int64
 	sources          map[string]quackridge.SourceStatus
 }
 
@@ -214,6 +215,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 	r.extensionDir = opts.ExtensionDir
 	r.loadedExtensions = map[string]bool{"httpfs": true, "quack": true}
 	r.odbcConnection, r.odbcResolver = odbcConnection, odbcResolver
+	r.odbcHandles = make(map[string]int64)
 	keepODBCConnection = true
 	r.sources = make(map[string]quackridge.SourceStatus)
 	logger.Info("engine ready", "component", "engine", "endpoint", uri)
@@ -341,14 +343,17 @@ func (r *Runtime) AttachODBC(ctx context.Context, attachment ODBCAttachment) err
 	if err := r.ensureConnectorExtension(ctx, "odbc"); err != nil {
 		return err
 	}
-	r.odbcResolver.set(attachment.SourceID, odbcConnectionString(attachment.Connection, attachment.Username, attachment.Password))
+	var handle int64
+	if err := r.db.QueryRowContext(ctx, "SELECT odbc_connect(?, ?, ?)", attachment.Connection, attachment.Username, attachment.Password).Scan(&handle); err != nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC connection setup failed", Cause: err}
+	}
 	if _, err := r.db.ExecContext(ctx, "ATTACH ':memory:' AS "+quoteIdentifier(attachment.Alias)); err != nil {
-		r.odbcResolver.delete(attachment.SourceID)
+		_ = r.closeODBCHandle(context.Background(), handle)
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC catalog setup failed", Cause: err}
 	}
 	fail := func(err error) error {
 		_, _ = r.db.ExecContext(context.Background(), "DETACH "+quoteIdentifier(attachment.Alias))
-		r.odbcResolver.delete(attachment.SourceID)
+		_ = r.closeODBCHandle(context.Background(), handle)
 		return err
 	}
 	for _, object := range attachment.Objects {
@@ -359,7 +364,7 @@ func (r *Runtime) AttachODBC(ctx context.Context, attachment ODBCAttachment) err
 			return fail(&quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC schema setup failed", Cause: err})
 		}
 		view := "CREATE VIEW " + quoteIdentifier(attachment.Alias) + "." + quoteIdentifier(object.Schema) + "." + quoteIdentifier(object.Name) +
-			" AS SELECT * FROM odbc_query(quackridge_odbc_connection('" + strings.ReplaceAll(attachment.SourceID, "'", "''") + "'), '" + strings.ReplaceAll(object.RemoteSelect, "'", "''") + "')"
+			" AS SELECT * FROM odbc_query(" + strconv.FormatInt(handle, 10) + ", '" + strings.ReplaceAll(object.RemoteSelect, "'", "''") + "')"
 		if _, err := r.db.ExecContext(ctx, view); err != nil {
 			return fail(&quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC relation setup failed", Cause: err})
 		}
@@ -375,8 +380,14 @@ func (r *Runtime) AttachODBC(ctx context.Context, attachment ODBCAttachment) err
 	if err := r.registerObjectTypes(ctx, attachment.SourceID, objects); err != nil {
 		return fail(err)
 	}
+	r.odbcHandles[attachment.SourceID] = handle
 	r.sources[attachment.SourceID] = quackridge.SourceStatus{ID: attachment.SourceID, Name: attachment.SourceName, Type: "odbc", Health: "ready"}
 	return nil
+}
+
+func (r *Runtime) closeODBCHandle(ctx context.Context, handle int64) error {
+	var ignored sql.NullString
+	return r.db.QueryRowContext(ctx, "SELECT odbc_close(?)", handle).Scan(&ignored)
 }
 
 func (r *Runtime) recordSource(attachment Attachment, health string, code quackridge.ErrorCode) {
@@ -449,6 +460,10 @@ func (r *Runtime) Detach(ctx context.Context, alias, sourceID string) error {
 	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_sources WHERE source_id = ?", sourceID)
 	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_objects WHERE source_id = ?", sourceID)
 	delete(r.sources, sourceID)
+	if handle, ok := r.odbcHandles[sourceID]; ok {
+		_ = r.closeODBCHandle(context.Background(), handle)
+		delete(r.odbcHandles, sourceID)
+	}
 	if r.odbcResolver != nil {
 		r.odbcResolver.delete(sourceID)
 	}
@@ -509,11 +524,15 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	}
 	_, stopErr := r.db.ExecContext(ctx, "CALL quack_stop(?)", r.endpoint)
 	policyErr := r.policy.Close()
-	odbcErr := r.odbcConnection.Close()
+	var odbcErr error
+	for _, handle := range r.odbcHandles {
+		odbcErr = errors.Join(odbcErr, r.closeODBCHandle(context.Background(), handle))
+	}
+	odbcErr = errors.Join(odbcErr, r.odbcConnection.Close())
 	closeErr := r.db.Close()
 	removeErr := os.RemoveAll(r.sandbox)
 	r.db, r.endpoint, r.token, r.policy, r.sandbox, r.sources = nil, "", "", nil, "", nil
-	r.extensionDir, r.loadedExtensions, r.odbcConnection, r.odbcResolver = "", nil, nil, nil
+	r.extensionDir, r.loadedExtensions, r.odbcConnection, r.odbcResolver, r.odbcHandles = "", nil, nil, nil, nil
 	return errors.Join(stopErr, policyErr, odbcErr, closeErr, removeErr)
 }
 
