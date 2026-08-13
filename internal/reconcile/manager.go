@@ -96,6 +96,16 @@ func (m *Manager) Reload(ctx context.Context) error {
 	return m.apply(ctx, prepared)
 }
 
+func (m *Manager) RebindLoader(loader Loader) error {
+	if loader == nil {
+		return errors.New("configuration loader is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.loader = loader
+	return nil
+}
+
 // Bootstrap is deliberately tolerant: every enabled source is validated and
 // attached independently so one unavailable database does not prevent the
 // Quack identity and healthy catalogs from starting.
@@ -135,7 +145,7 @@ func (m *Manager) Validate(ctx context.Context, configured config.Source, creden
 	}
 	return adapter.Validate(ctx, source.Definition{
 		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		Type: configured.Type, Enabled: configured.Enabled,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
 	})
 }
 
@@ -194,9 +204,13 @@ func (m *Manager) prepareOne(ctx context.Context, configured config.Source) (pre
 	if !ok {
 		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source adapter is unavailable"}
 	}
-	credential, err := m.secrets.Get(ctx, configured.CredentialRef)
-	if err != nil {
-		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential is unavailable", Cause: err}
+	var credential []byte
+	if configured.CredentialRef != "" {
+		var err error
+		credential, err = m.secrets.Get(ctx, configured.CredentialRef)
+		if err != nil {
+			return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source credential is unavailable", Cause: err}
+		}
 	}
 	configuredFingerprint := fingerprint(configured, credential)
 	adapter, buildErr := factory.Build(configured, credential)
@@ -206,7 +220,7 @@ func (m *Manager) prepareOne(ctx context.Context, configured config.Source) (pre
 	}
 	definition := source.Definition{
 		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		Type: configured.Type, Enabled: configured.Enabled,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
 	}
 	if err := adapter.Validate(ctx, definition); err != nil {
 		return preparedSource{}, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source validation failed", Cause: err}
@@ -290,7 +304,8 @@ func fingerprint(configured config.Source, credential []byte) [32]byte {
 	credentialHash := sha256.Sum256(credential)
 	value := bytes.Join([][]byte{
 		[]byte(configured.ID), []byte(configured.Name), []byte(configured.Alias),
-		[]byte(configured.Type), []byte(configured.CredentialRef), configured.Options, credentialHash[:],
+		[]byte(configured.Type), []byte(configured.DatabaseType), []byte(configured.CredentialRef),
+		configured.Options, credentialHash[:],
 	}, []byte{0})
 	return sha256.Sum256(value)
 }

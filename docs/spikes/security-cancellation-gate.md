@@ -98,8 +98,8 @@ forces a real memory-limit failure that maps to `QR_RESOURCE_EXHAUSTED`. It also
 proves local file reads, extension installation, settings changes, persistent
 secret creation, and writes are denied.
 
-`postgres_scanner` requires a temporary secret to attach while
-`LocalFileSystem` and persistent secrets are disabled. QuackRidge creates a
+`postgres_scanner` requires a temporary secret to attach while persistent
+secrets are disabled and local paths are allowlisted. QuackRidge creates a
 named in-memory PostgreSQL secret from structured fields, attaches through that
 secret, disables PostgreSQL-backed secret-table discovery, and never places the
 credential-bearing DSN in an error. The disposable PostgreSQL join and metadata

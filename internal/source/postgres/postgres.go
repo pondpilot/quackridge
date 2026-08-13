@@ -88,15 +88,11 @@ func (a *Adapter) Attach(ctx context.Context, definition source.Definition) erro
 	}
 	if err := a.engine.Attach(ctx, engine.Attachment{
 		SourceID: definition.ID, SourceName: definition.Name, Alias: definition.Alias,
-		Type: "postgres", Secret: a.secretValues(), ReadOnly: true,
+		Type: "postgres", DatabaseType: "postgres", Secret: a.secretValues(), ReadOnly: true,
 	}); err != nil {
 		return err
 	}
 	if err := a.verifyReadOnly(ctx, definition.Alias); err != nil {
-		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
-		return err
-	}
-	if err := a.registerObjectTypes(ctx, definition); err != nil {
 		_ = a.engine.Detach(context.Background(), definition.Alias, definition.ID)
 		return err
 	}
@@ -139,9 +135,9 @@ func (a *Adapter) registerObjectTypes(ctx context.Context, definition source.Def
 }
 
 func (a *Adapter) Metadata(ctx context.Context, definition source.Definition) ([]source.MetadataRow, error) {
-	rows, err := a.engine.Query(ctx, `SELECT source_id, source_name, source_type, source_health,
+	rows, err := a.engine.Query(ctx, `SELECT source_id, source_name, connector_type, database_type, source_health,
 		catalog_name, schema_name, object_name, object_type, column_name, ordinal_position,
-		duckdb_type, nullable, error_code FROM quackridge_metadata_v1() WHERE source_id = ?
+		duckdb_type, nullable, is_system_schema, error_code FROM quackridge_metadata_v2() WHERE source_id = ?
 		ORDER BY schema_name, object_name, ordinal_position`, definition.ID)
 	if err != nil {
 		return nil, err
@@ -152,10 +148,10 @@ func (a *Adapter) Metadata(ctx context.Context, definition source.Definition) ([
 		var row source.MetadataRow
 		var schemaName, objectName, objectType, columnName, duckDBType, errorCode sql.NullString
 		var ordinal sql.NullInt64
-		var nullable sql.NullBool
-		if err := rows.Scan(&row.SourceID, &row.SourceName, &row.SourceType, &row.SourceHealth,
+		var nullable, isSystemSchema sql.NullBool
+		if err := rows.Scan(&row.SourceID, &row.SourceName, &row.ConnectorType, &row.DatabaseType, &row.SourceHealth,
 			&row.CatalogName, &schemaName, &objectName, &objectType, &columnName, &ordinal,
-			&duckDBType, &nullable, &errorCode); err != nil {
+			&duckDBType, &nullable, &isSystemSchema, &errorCode); err != nil {
 			return nil, err
 		}
 		row.SchemaName = stringPointer(schemaName)
@@ -171,6 +167,10 @@ func (a *Adapter) Metadata(ctx context.Context, definition source.Definition) ([
 		if nullable.Valid {
 			value := nullable.Bool
 			row.Nullable = &value
+		}
+		if isSystemSchema.Valid {
+			value := isSystemSchema.Bool
+			row.IsSystemSchema = &value
 		}
 		metadata = append(metadata, row)
 	}

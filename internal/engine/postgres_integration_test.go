@@ -137,7 +137,7 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 	adapter := postgres.New(runtime, postgres.Config{
 		Host: "127.0.0.1", Port: port, Database: "postgres", User: "qr_reader", SSLMode: "require",
 	}, postgres.Credential{Password: readerPassword})
-	definition := source.Definition{ID: "warehouse", Name: "Warehouse", Alias: "warehouse", Type: "postgres", Enabled: true}
+	definition := source.Definition{ID: "warehouse", Name: "Warehouse", Alias: "warehouse", ConnectorType: "postgres", DatabaseType: "postgres", Enabled: true}
 	if err := adapter.Attach(ctx, definition); err != nil {
 		t.Fatalf("attach: %v; cause: %v", err, errors.Unwrap(err))
 	}
@@ -172,7 +172,7 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 		t.Fatalf("joined result = %q %q", customer, total)
 	}
 	var columns int
-	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v1()
+	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v2()
 		WHERE source_id = 'warehouse' AND schema_name = 'sales' AND object_name IN ('customers', 'orders', 'customer_totals')`).Scan(&columns); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestPostgresServerSideJoinAndMetadata(t *testing.T) {
 		t.Fatalf("metadata columns = %d", columns)
 	}
 	var viewColumns int
-	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v1()
+	if err := runtime.QueryRow(ctx, `SELECT count(*) FROM quackridge_metadata_v2()
 		WHERE source_id = 'warehouse' AND object_name = 'customer_totals' AND object_type = 'view'`).Scan(&viewColumns); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestUnavailablePostgresDoesNotStopQuackIdentity(t *testing.T) {
 	adapter := postgres.New(runtime, postgres.Config{
 		Host: "127.0.0.1", Port: closedPort, Database: "missing", User: "reader", SSLMode: "disable",
 	}, postgres.Credential{Password: "unusable-test-credential"})
-	definition := source.Definition{ID: "unavailable", Name: "Unavailable", Alias: "unavailable", Type: "postgres", Enabled: true}
+	definition := source.Definition{ID: "unavailable", Name: "Unavailable", Alias: "unavailable", ConnectorType: "postgres", DatabaseType: "postgres", Enabled: true}
 	if err := adapter.Attach(ctx, definition); err == nil {
 		t.Fatal("unavailable PostgreSQL source unexpectedly attached")
 	}
@@ -355,7 +355,7 @@ func TestUnavailablePostgresDoesNotStopQuackIdentity(t *testing.T) {
 	}
 	var sourceRows int
 	if err := client.QueryRowContext(ctx,
-		`SELECT count(*) FROM ridge.query('FROM quackridge_metadata_v1()')`).Scan(&sourceRows); err != nil {
+		`SELECT count(*) FROM ridge.query('FROM quackridge_metadata_v2()')`).Scan(&sourceRows); err != nil {
 		t.Fatal(err)
 	}
 	if sourceRows != 0 {

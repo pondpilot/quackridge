@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 type Identity = protocol.Identity
@@ -76,7 +76,7 @@ func Start(options Options) (*Server, Challenge, error) {
 		response: Response{Endpoint: options.Endpoint, Token: options.Token, Identity: protocol.CurrentIdentity()},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/pair", server.handle)
+	mux.HandleFunc("/v2/pair", server.handle)
 	server.http = &http.Server{
 		Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 2 * time.Second,
 		WriteTimeout: 2 * time.Second, IdleTimeout: 2 * time.Second,
@@ -95,7 +95,7 @@ func Start(options Options) (*Server, Challenge, error) {
 		}
 	}()
 	challenge := Challenge{
-		URL:   "http://" + listener.Addr().String() + "/v1/pair",
+		URL:   "http://" + listener.Addr().String() + "/v2/pair",
 		Nonce: nonce, ExpiresAt: expiresAt,
 	}
 	return server, challenge, nil

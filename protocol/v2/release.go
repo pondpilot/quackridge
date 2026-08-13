@@ -1,4 +1,4 @@
-package v1
+package v2
 
 import (
 	"encoding/hex"
@@ -39,7 +39,7 @@ func ValidateReleaseManifest(manifest ReleaseManifest) error {
 	if manifest.Channel != "prerelease" && manifest.Channel != "stable" {
 		return errors.New("release channel is invalid")
 	}
-	if manifest.Protocol.Minimum < 1 || manifest.Protocol.Maximum < manifest.Protocol.Minimum {
+	if manifest.Protocol.Minimum != 2 || manifest.Protocol.Maximum != 2 {
 		return errors.New("release protocol range is invalid")
 	}
 	supported := []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "windows/amd64"}

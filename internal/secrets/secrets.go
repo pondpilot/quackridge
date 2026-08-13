@@ -20,6 +20,46 @@ type Store interface {
 	Delete(context.Context, string) error
 }
 
+type lazySystem struct {
+	once  sync.Once
+	store Store
+	err   error
+}
+
+// NewLazySystemStore defers platform-provider initialization until a source
+// actually needs credentials. This lets a file-only daemon accept credentialed
+// sources on a later reload without requiring the provider at startup.
+func NewLazySystemStore() Store { return &lazySystem{} }
+
+func (s *lazySystem) initialize() (Store, error) {
+	s.once.Do(func() { s.store, s.err = NewSystemStore() })
+	return s.store, s.err
+}
+
+func (s *lazySystem) Get(ctx context.Context, reference string) ([]byte, error) {
+	store, err := s.initialize()
+	if err != nil {
+		return nil, err
+	}
+	return store.Get(ctx, reference)
+}
+
+func (s *lazySystem) Put(ctx context.Context, reference string, value []byte) error {
+	store, err := s.initialize()
+	if err != nil {
+		return err
+	}
+	return store.Put(ctx, reference, value)
+}
+
+func (s *lazySystem) Delete(ctx context.Context, reference string) error {
+	store, err := s.initialize()
+	if err != nil {
+		return err
+	}
+	return store.Delete(ctx, reference)
+}
+
 type Memory struct {
 	mu     sync.RWMutex
 	values map[string][]byte

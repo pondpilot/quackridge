@@ -190,3 +190,13 @@ func TestDiagnosticsSanitizesHealthAndReportsPosture(t *testing.T) {
 		t.Fatalf("warnings = %#v", diagnostics[0].Warnings)
 	}
 }
+
+func TestFingerprintIncludesSemanticDatabaseType(t *testing.T) {
+	configured := configured("warehouse", adapterBehavior{})
+	configured.DatabaseType = "mysql"
+	mysqlFingerprint := fingerprint(configured, []byte("password"))
+	configured.DatabaseType = "mariadb"
+	if mariadbFingerprint := fingerprint(configured, []byte("password")); mariadbFingerprint == mysqlFingerprint {
+		t.Fatal("database type did not affect source fingerprint")
+	}
+}

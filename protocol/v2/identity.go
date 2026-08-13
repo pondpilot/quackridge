@@ -1,5 +1,5 @@
-// Package v1 defines the machine-readable QuackRidge protocol v1 contract.
-package v1
+// Package v2 defines the machine-readable QuackRidge protocol v2 contract.
+package v2
 
 import (
 	"bytes"
@@ -19,7 +19,7 @@ type Identity struct {
 	ProductVersion  string   `json:"product_version"`
 	ProtocolVersion int      `json:"protocol_version"`
 	MetadataVersion int      `json:"metadata_version"`
-	SourceTypes     []string `json:"source_types"`
+	ConnectorTypes  []string `json:"connector_types"`
 	ReadOnly        bool     `json:"read_only"`
 	Capabilities    []string `json:"capabilities"`
 }
@@ -28,7 +28,7 @@ func CurrentIdentity() Identity {
 	return Identity{
 		Product: quackridge.Product, ProductVersion: quackridge.Version,
 		ProtocolVersion: quackridge.ProtocolVersion, MetadataVersion: quackridge.MetadataVersion,
-		SourceTypes: []string{"postgres"}, ReadOnly: true, Capabilities: quackridge.Capabilities(),
+		ConnectorTypes: []string{"duckdb", "mysql", "odbc", "postgres", "sqlite"}, ReadOnly: true, Capabilities: quackridge.Capabilities(),
 	}
 }
 
@@ -60,8 +60,8 @@ func ValidateIdentity(identity Identity) error {
 		return mismatch("metadata version is unsupported", nil)
 	case !identity.ReadOnly:
 		return mismatch("read-only identity is required", nil)
-	case len(identity.SourceTypes) != 1 || identity.SourceTypes[0] != "postgres":
-		return mismatch("PostgreSQL capability is missing", nil)
+	case !slices.Equal(identity.ConnectorTypes, []string{"duckdb", "mysql", "odbc", "postgres", "sqlite"}):
+		return mismatch("connector capability set is unsupported", nil)
 	}
 	requiredCapabilities := quackridge.Capabilities()
 	if len(identity.Capabilities) != len(requiredCapabilities) {
@@ -87,7 +87,8 @@ type Column struct {
 var MetadataColumns = []Column{
 	{Name: "source_id", DuckDBType: "VARCHAR"},
 	{Name: "source_name", DuckDBType: "VARCHAR"},
-	{Name: "source_type", DuckDBType: "VARCHAR"},
+	{Name: "connector_type", DuckDBType: "VARCHAR"},
+	{Name: "database_type", DuckDBType: "VARCHAR"},
 	{Name: "source_health", DuckDBType: "VARCHAR"},
 	{Name: "catalog_name", DuckDBType: "VARCHAR"},
 	{Name: "schema_name", DuckDBType: "VARCHAR"},
@@ -97,5 +98,6 @@ var MetadataColumns = []Column{
 	{Name: "ordinal_position", DuckDBType: "INTEGER"},
 	{Name: "duckdb_type", DuckDBType: "VARCHAR"},
 	{Name: "nullable", DuckDBType: "BOOLEAN"},
+	{Name: "is_system_schema", DuckDBType: "BOOLEAN"},
 	{Name: "error_code", DuckDBType: "VARCHAR"},
 }

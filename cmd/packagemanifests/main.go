@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 func main() {

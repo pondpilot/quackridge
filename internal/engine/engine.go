@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,39 +19,57 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	quackridge "github.com/pondpilot/quackridge"
 	"github.com/pondpilot/quackridge/internal/policy"
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 type Runtime struct {
-	mu       sync.Mutex
-	db       *sql.DB
-	endpoint string
-	token    string
-	logger   *slog.Logger
-	policy   *policy.Handle
-	sandbox  string
-	sources  map[string]quackridge.SourceStatus
+	mu               sync.Mutex
+	db               *sql.DB
+	endpoint         string
+	token            string
+	logger           *slog.Logger
+	policy           *policy.Handle
+	sandbox          string
+	extensionDir     string
+	loadedExtensions map[string]bool
+	odbcConnection   *sql.Conn
+	odbcResolver     *odbcResolver
+	sources          map[string]quackridge.SourceStatus
 }
 
 // Attachment is adapter-neutral. Connection is held only for the duration of
 // ATTACH and must never be logged or persisted by the engine.
 type Attachment struct {
-	SourceID   string
-	SourceName string
-	Alias      string
-	Type       string
-	Connection string
-	Secret     map[string]string
-	ReadOnly   bool
+	SourceID     string
+	SourceName   string
+	Alias        string
+	Type         string
+	DatabaseType string
+	Connection   string
+	Secret       map[string]string
+	ReadOnly     bool
 }
 
 type ObjectType struct {
 	Schema string
 	Name   string
 	Type   string
+}
+
+type ODBCObject struct {
+	Schema       string
+	Name         string
+	Type         string
+	RemoteSelect string
+}
+
+type ODBCAttachment struct {
+	SourceID, SourceName, Alias, DatabaseType string
+	Connection, Username, Password            string
+	Objects                                   []ODBCObject
 }
 
 func New() *Runtime { return &Runtime{} }
@@ -80,7 +99,7 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 
 	// Quack uses httpfs for its HTTP transport. Load every dependency from the
 	// verified local bundle before network-based extension loading is disabled.
-	for _, extension := range []string{"httpfs", "postgres_scanner", "quack"} {
+	for _, extension := range []string{"httpfs", "quack"} {
 		path := filepath.Join(opts.ExtensionDir, extension+".duckdb_extension")
 		if err := loadExtension(ctx, db, path); err != nil {
 			_ = db.Close()
@@ -107,6 +126,27 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		_ = os.RemoveAll(sandbox)
 		return "", internal("install authorization policy", err)
 	}
+	odbcConnection, err := db.Conn(ctx)
+	if err != nil {
+		_ = policyHandle.Close()
+		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
+		return "", internal("open ODBC credential resolver", err)
+	}
+	odbcResolver := &odbcResolver{values: make(map[string]string)}
+	if err := duckdb.RegisterScalarUDF(odbcConnection, "quackridge_odbc_connection", odbcResolver); err != nil {
+		_ = odbcConnection.Close()
+		_ = policyHandle.Close()
+		_ = db.Close()
+		_ = os.RemoveAll(sandbox)
+		return "", internal("install ODBC credential resolver", err)
+	}
+	keepODBCConnection := false
+	defer func() {
+		if !keepODBCConnection {
+			_ = odbcConnection.Close()
+		}
+	}()
 	if _, err := db.ExecContext(ctx, "SET GLOBAL quack_authorization_function = 'quackridge_authorize'"); err != nil {
 		_ = policyHandle.Close()
 		_ = db.Close()
@@ -171,6 +211,10 @@ func (r *Runtime) Start(ctx context.Context, opts quackridge.Options) (string, e
 		return "", internal("start Quack", err)
 	}
 	r.db, r.endpoint, r.token, r.logger, r.policy, r.sandbox = db, uri, token, logger, policyHandle, sandbox
+	r.extensionDir = opts.ExtensionDir
+	r.loadedExtensions = map[string]bool{"httpfs": true, "quack": true}
+	r.odbcConnection, r.odbcResolver = odbcConnection, odbcResolver
+	keepODBCConnection = true
 	r.sources = make(map[string]quackridge.SourceStatus)
 	logger.Info("engine ready", "component", "engine", "endpoint", uri)
 	return uri, nil
@@ -199,6 +243,10 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 	}
 	if !validIdentifier(attachment.Alias) || !validIdentifier(attachment.Type) {
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source identifier is invalid"}
+	}
+	if err := r.ensureConnectorExtension(ctx, attachment.Type); err != nil {
+		r.recordSource(attachment, "unavailable", quackridge.CodeSourceUnavailable)
+		return err
 	}
 	connection := strings.ReplaceAll(attachment.Connection, "'", "''")
 	secretName := "qr_secret_" + attachment.Alias
@@ -237,17 +285,97 @@ func (r *Runtime) Attach(ctx context.Context, attachment Attachment) error {
 			"error_code", quackridge.CodeSourceUnavailable)
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source attach failed", Cause: err}
 	}
-	if _, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, 'ready', NULL)
+	databaseType := attachment.DatabaseType
+	if databaseType == "" {
+		databaseType = attachment.Type
+	}
+	if _, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, ?, 'ready', NULL)
 		ON CONFLICT (source_id) DO UPDATE SET source_name = excluded.source_name,
-		source_type = excluded.source_type, catalog_name = excluded.catalog_name,
+		connector_type = excluded.connector_type, database_type = excluded.database_type, catalog_name = excluded.catalog_name,
 		source_health = excluded.source_health, error_code = excluded.error_code`,
-		attachment.SourceID, attachment.SourceName, attachment.Type, attachment.Alias); err != nil {
+		attachment.SourceID, attachment.SourceName, attachment.Type, databaseType, attachment.Alias); err != nil {
 		_, _ = r.db.ExecContext(context.Background(), "DETACH "+quoteIdentifier(attachment.Alias))
 		return internal("register source metadata", err)
+	}
+	if err := r.registerAttachedObjectTypes(ctx, attachment.SourceID, attachment.Alias); err != nil {
+		_, _ = r.db.ExecContext(context.Background(), "DETACH "+quoteIdentifier(attachment.Alias))
+		return err
 	}
 	r.recordSource(attachment, "ready", "")
 	r.logger.Info("source ready", "component", "source", "source_id", attachment.SourceID,
 		"source_type", attachment.Type, "duration_ms", time.Since(started).Milliseconds())
+	return nil
+}
+
+func (r *Runtime) ODBCQuery(ctx context.Context, sourceID, connection, username, password, query string) (*sql.Rows, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return nil, &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	if err := r.ensureConnectorExtension(ctx, "odbc"); err != nil {
+		return nil, err
+	}
+	r.odbcResolver.set(sourceID, odbcConnectionString(connection, username, password))
+	statement := "SELECT * FROM odbc_query(quackridge_odbc_connection('" + strings.ReplaceAll(sourceID, "'", "''") + "'), '" + strings.ReplaceAll(query, "'", "''") + "')"
+	return r.db.QueryContext(ctx, statement)
+}
+
+func (r *Runtime) ClearODBC(sourceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if resolver := r.odbcResolver; resolver != nil {
+		resolver.delete(sourceID)
+	}
+}
+
+func (r *Runtime) AttachODBC(ctx context.Context, attachment ODBCAttachment) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
+	}
+	if !validIdentifier(attachment.Alias) || !validIdentifier(attachment.DatabaseType) {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC source identifier is invalid"}
+	}
+	if err := r.ensureConnectorExtension(ctx, "odbc"); err != nil {
+		return err
+	}
+	r.odbcResolver.set(attachment.SourceID, odbcConnectionString(attachment.Connection, attachment.Username, attachment.Password))
+	if _, err := r.db.ExecContext(ctx, "ATTACH ':memory:' AS "+quoteIdentifier(attachment.Alias)); err != nil {
+		r.odbcResolver.delete(attachment.SourceID)
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC catalog setup failed", Cause: err}
+	}
+	fail := func(err error) error {
+		_, _ = r.db.ExecContext(context.Background(), "DETACH "+quoteIdentifier(attachment.Alias))
+		r.odbcResolver.delete(attachment.SourceID)
+		return err
+	}
+	for _, object := range attachment.Objects {
+		if !safeCatalogIdentifier(object.Schema) || !safeCatalogIdentifier(object.Name) || (object.Type != "table" && object.Type != "view") {
+			return fail(&quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC metadata contains an unsupported identifier"})
+		}
+		if _, err := r.db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+quoteIdentifier(attachment.Alias)+"."+quoteIdentifier(object.Schema)); err != nil {
+			return fail(&quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC schema setup failed", Cause: err})
+		}
+		view := "CREATE VIEW " + quoteIdentifier(attachment.Alias) + "." + quoteIdentifier(object.Schema) + "." + quoteIdentifier(object.Name) +
+			" AS SELECT * FROM odbc_query(quackridge_odbc_connection('" + strings.ReplaceAll(attachment.SourceID, "'", "''") + "'), '" + strings.ReplaceAll(object.RemoteSelect, "'", "''") + "')"
+		if _, err := r.db.ExecContext(ctx, view); err != nil {
+			return fail(&quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "ODBC relation setup failed", Cause: err})
+		}
+	}
+	if _, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, 'odbc', ?, ?, 'ready', NULL)`,
+		attachment.SourceID, attachment.SourceName, attachment.DatabaseType, attachment.Alias); err != nil {
+		return fail(internal("register ODBC source metadata", err))
+	}
+	objects := make([]ObjectType, 0, len(attachment.Objects))
+	for _, object := range attachment.Objects {
+		objects = append(objects, ObjectType{Schema: object.Schema, Name: object.Name, Type: object.Type})
+	}
+	if err := r.registerObjectTypes(ctx, attachment.SourceID, objects); err != nil {
+		return fail(err)
+	}
+	r.sources[attachment.SourceID] = quackridge.SourceStatus{ID: attachment.SourceID, Name: attachment.SourceName, Type: "odbc", Health: "ready"}
 	return nil
 }
 
@@ -264,11 +392,15 @@ func (r *Runtime) recordSource(attachment Attachment, health string, code quackr
 		if code != "" {
 			errorCode = string(code)
 		}
-		_, _ = r.db.ExecContext(context.Background(), `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, ?, ?)
+		databaseType := attachment.DatabaseType
+		if databaseType == "" {
+			databaseType = attachment.Type
+		}
+		_, _ = r.db.ExecContext(context.Background(), `INSERT INTO memory.main.quackridge_sources VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (source_id) DO UPDATE SET source_name = excluded.source_name,
-			source_type = excluded.source_type, catalog_name = excluded.catalog_name,
+			connector_type = excluded.connector_type, database_type = excluded.database_type, catalog_name = excluded.catalog_name,
 			source_health = excluded.source_health, error_code = excluded.error_code`,
-			attachment.SourceID, attachment.SourceName, attachment.Type, attachment.Alias, health, errorCode)
+			attachment.SourceID, attachment.SourceName, attachment.Type, databaseType, attachment.Alias, health, errorCode)
 	}
 }
 
@@ -317,6 +449,9 @@ func (r *Runtime) Detach(ctx context.Context, alias, sourceID string) error {
 	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_sources WHERE source_id = ?", sourceID)
 	_, _ = r.db.ExecContext(ctx, "DELETE FROM memory.main.quackridge_objects WHERE source_id = ?", sourceID)
 	delete(r.sources, sourceID)
+	if r.odbcResolver != nil {
+		r.odbcResolver.delete(sourceID)
+	}
 	r.logger.Info("source detached", "component", "source", "source_id", sourceID)
 	return nil
 }
@@ -327,6 +462,10 @@ func (r *Runtime) RegisterObjectTypes(ctx context.Context, sourceID string, obje
 	if r.db == nil {
 		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "engine is not running"}
 	}
+	return r.registerObjectTypes(ctx, sourceID, objects)
+}
+
+func (r *Runtime) registerObjectTypes(ctx context.Context, sourceID string, objects []ObjectType) error {
 	transaction, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return internal("begin metadata update", err)
@@ -350,6 +489,18 @@ func (r *Runtime) RegisterObjectTypes(ctx context.Context, sourceID string, obje
 	return nil
 }
 
+func (r *Runtime) UpdateDatabaseType(ctx context.Context, sourceID, databaseType string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil || !validIdentifier(databaseType) {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "database type is invalid"}
+	}
+	if _, err := r.db.ExecContext(ctx, "UPDATE memory.main.quackridge_sources SET database_type = ? WHERE source_id = ?", databaseType, sourceID); err != nil {
+		return internal("update source database type", err)
+	}
+	return nil
+}
+
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -358,10 +509,12 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	}
 	_, stopErr := r.db.ExecContext(ctx, "CALL quack_stop(?)", r.endpoint)
 	policyErr := r.policy.Close()
+	odbcErr := r.odbcConnection.Close()
 	closeErr := r.db.Close()
 	removeErr := os.RemoveAll(r.sandbox)
 	r.db, r.endpoint, r.token, r.policy, r.sandbox, r.sources = nil, "", "", nil, "", nil
-	return errors.Join(stopErr, policyErr, closeErr, removeErr)
+	r.extensionDir, r.loadedExtensions, r.odbcConnection, r.odbcResolver = "", nil, nil, nil
+	return errors.Join(stopErr, policyErr, odbcErr, closeErr, removeErr)
 }
 
 func (r *Runtime) Token() string {
@@ -450,7 +603,7 @@ func verifyVersionPair(ctx context.Context, db *sql.DB) error {
 	}
 	versions := make(map[string]string)
 	rows, err := db.QueryContext(ctx, `SELECT extension_name, coalesce(extension_version, '')
-		FROM duckdb_extensions() WHERE loaded AND extension_name IN ('httpfs', 'postgres_scanner', 'quack')`)
+		FROM duckdb_extensions() WHERE loaded AND extension_name IN ('httpfs', 'quack')`)
 	if err != nil {
 		return internal("verify extension versions", err)
 	}
@@ -473,7 +626,8 @@ func validateVersionPair(engineVersion string, extensions map[string]string) err
 	if strings.TrimPrefix(engineVersion, "v") != want {
 		return &quackridge.Error{Code: quackridge.CodeProtocolMismatch, Message: "unsupported DuckDB version pair"}
 	}
-	for name, expected := range quackridge.ExtensionVersions() {
+	for _, name := range []string{"httpfs", "quack"} {
+		expected := quackridge.ExtensionVersions()[name]
 		version, loaded := extensions[name]
 		if !loaded || version != expected {
 			return &quackridge.Error{Code: quackridge.CodeProtocolMismatch, Message: "unsupported DuckDB extension version pair"}
@@ -509,7 +663,8 @@ func configure(ctx context.Context, db *sql.DB, opts quackridge.Options, sandbox
 		"SET GLOBAL secret_directory = '" + strings.ReplaceAll(filepath.Join(sandbox, "secrets"), "'", "''") + "'",
 		"SET GLOBAL temp_directory = '" + strings.ReplaceAll(filepath.Join(sandbox, "temp"), "'", "''") + "'",
 		"SET GLOBAL enable_global_s3_configuration = false",
-		"SET GLOBAL disabled_filesystems = 'LocalFileSystem'",
+		"SET GLOBAL allowed_directories = " + quoteStringList([]string{sandbox, opts.ExtensionDir}),
+		"SET GLOBAL allowed_paths = " + quoteStringList(opts.AllowedPaths),
 		fmt.Sprintf("SET GLOBAL threads = %d", threads),
 		"SET GLOBAL memory_limit = '" + strings.ReplaceAll(memory, "'", "''") + "'",
 		"SET GLOBAL max_temp_directory_size = '" + strings.ReplaceAll(tempLimit, "'", "''") + "'",
@@ -531,7 +686,8 @@ func lockConfiguration(ctx context.Context, db *sql.DB) error {
 
 func installMetadataRelation(ctx context.Context, db *sql.DB) error {
 	const sources = `CREATE TABLE quackridge_sources (
-		source_id VARCHAR PRIMARY KEY, source_name VARCHAR NOT NULL, source_type VARCHAR NOT NULL,
+		source_id VARCHAR PRIMARY KEY, source_name VARCHAR NOT NULL, connector_type VARCHAR NOT NULL,
+		database_type VARCHAR NOT NULL,
 		catalog_name VARCHAR UNIQUE NOT NULL, source_health VARCHAR NOT NULL, error_code VARCHAR)`
 	if _, err := db.ExecContext(ctx, sources); err != nil {
 		return internal("create source registry", err)
@@ -543,12 +699,21 @@ func installMetadataRelation(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, objects); err != nil {
 		return internal("create object registry", err)
 	}
-	const statement = `CREATE OR REPLACE MACRO quackridge_metadata_v1() AS TABLE
-		SELECT s.source_id, s.source_name, s.source_type, s.source_health,
+	const statement = `CREATE OR REPLACE MACRO quackridge_metadata_v2() AS TABLE
+		SELECT s.source_id, s.source_name, s.connector_type, s.database_type, s.source_health,
 		s.catalog_name, c.schema_name, c.table_name object_name,
 		CASE WHEN c.table_name IS NULL OR c.internal THEN NULL
 			ELSE coalesce(o.object_type, 'table') END object_type, column_name,
 		column_index + 1 ordinal_position, data_type duckdb_type, is_nullable nullable,
+		CASE
+			WHEN s.database_type = 'postgres' THEN lower(c.schema_name) IN ('information_schema', 'pg_catalog')
+			WHEN s.database_type IN ('mysql', 'mariadb') THEN lower(c.schema_name) IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+			WHEN s.database_type = 'duckdb' THEN lower(c.schema_name) IN ('information_schema', 'pg_catalog')
+			WHEN s.database_type = 'sqlite' THEN lower(c.schema_name) = 'temp'
+			WHEN s.database_type = 'sqlserver' THEN lower(c.schema_name) IN ('information_schema', 'sys')
+			WHEN s.database_type = 'oracle' THEN upper(c.schema_name) IN ('SYS', 'SYSTEM', 'OUTLN', 'XDB')
+			WHEN s.database_type = 'odbc' THEN lower(c.schema_name) = 'information_schema'
+			ELSE false END is_system_schema,
 		s.error_code
 		FROM memory.main.quackridge_sources s
 		LEFT JOIN duckdb_columns() c ON c.database_name = s.catalog_name
@@ -569,6 +734,44 @@ func installMetadataRelation(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+func (r *Runtime) ensureConnectorExtension(ctx context.Context, connectorType string) error {
+	extension, supported := map[string]string{
+		"postgres": "postgres_scanner",
+		"mysql":    "mysql_scanner",
+		"sqlite":   "sqlite_scanner",
+		"odbc":     "odbc_scanner",
+		"duckdb":   "",
+	}[connectorType]
+	if !supported {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source connector is unsupported"}
+	}
+	if extension == "" || r.loadedExtensions[extension] {
+		return nil
+	}
+	if err := loadExtension(ctx, r.db, filepath.Join(r.extensionDir, extension+".duckdb_extension")); err != nil {
+		return &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "source connector extension is unavailable", Cause: err}
+	}
+	var version string
+	if err := r.db.QueryRowContext(ctx, "SELECT coalesce(extension_version, '') FROM duckdb_extensions() WHERE extension_name = ? AND loaded", extension).Scan(&version); err != nil || version != quackridge.ExtensionVersions()[extension] {
+		return &quackridge.Error{Code: quackridge.CodeProtocolMismatch, Message: "unsupported source connector extension version", Cause: err}
+	}
+	r.loadedExtensions[extension] = true
+	return nil
+}
+
+func (r *Runtime) registerAttachedObjectTypes(ctx context.Context, sourceID, alias string) error {
+	_, err := r.db.ExecContext(ctx, `INSERT INTO memory.main.quackridge_objects
+		SELECT ?, schema_name, table_name, 'table' FROM duckdb_tables() WHERE database_name = ? AND NOT internal
+		UNION ALL
+		SELECT ?, schema_name, view_name, 'view' FROM duckdb_views() WHERE database_name = ? AND NOT internal
+		ON CONFLICT (source_id, schema_name, object_name) DO UPDATE SET object_type = excluded.object_type`,
+		sourceID, alias, sourceID, alias)
+	if err != nil {
+		return internal("register attached object metadata", err)
+	}
+	return nil
+}
+
 func validIdentifier(value string) bool {
 	if value == "" || len(value) > 63 || value[0] < 'a' || value[0] > 'z' {
 		return false
@@ -581,6 +784,10 @@ func validIdentifier(value string) bool {
 	return true
 }
 
+func safeCatalogIdentifier(value string) bool {
+	return value != "" && len(value) <= 255 && !strings.ContainsRune(value, 0)
+}
+
 func createSecretStatement(name, sourceType string, values map[string]string) (string, error) {
 	if !validIdentifier(sourceType) {
 		return "", &quackridge.Error{Code: quackridge.CodeSourceUnavailable, Message: "secret type is invalid"}
@@ -590,6 +797,13 @@ func createSecretStatement(name, sourceType string, values map[string]string) (s
 		"USER": true, "PASSWORD": true, "SSLMODE": true, "SSLROOTCERT": true,
 		"CONNECT_TIMEOUT": true, "APPLICATION_NAME": true, "KEEPALIVES": true,
 		"KEEPALIVES_IDLE": true, "OPTIONS": true,
+	}
+	if sourceType == "mysql" {
+		allowed = map[string]bool{
+			"HOST": true, "PORT": true, "DATABASE": true, "USER": true,
+			"PASSWORD": true, "SSL_MODE": true, "SSL_CA": true, "SSL_CAPATH": true,
+			"SSL_CERT": true, "SSL_CIPHER": true, "SSL_CRL": true, "SSL_CRLPATH": true, "SSL_KEY": true,
+		}
 	}
 	keys := make([]string, 0, len(values))
 	normalized := make(map[string]string, len(values))
@@ -614,6 +828,62 @@ func createSecretStatement(name, sourceType string, values map[string]string) (s
 }
 
 func quoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
+
+func quoteStringList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" {
+			quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", "''")+"'")
+		}
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+type odbcResolver struct {
+	mu     sync.RWMutex
+	values map[string]string
+}
+
+func (r *odbcResolver) set(sourceID, value string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.values[sourceID] = value
+}
+
+func (r *odbcResolver) delete(sourceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.values, sourceID)
+}
+
+func (*odbcResolver) Config() duckdb.ScalarFuncConfig {
+	varchar, _ := duckdb.NewTypeInfo(duckdb.TYPE_VARCHAR)
+	return duckdb.ScalarFuncConfig{InputTypeInfos: []duckdb.TypeInfo{varchar}, ResultTypeInfo: varchar}
+}
+
+func (r *odbcResolver) Executor() duckdb.ScalarFuncExecutor {
+	return duckdb.ScalarFuncExecutor{RowExecutor: func(values []driver.Value) (any, error) {
+		sourceID, _ := values[0].(string)
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		value, ok := r.values[sourceID]
+		if !ok {
+			return nil, errors.New("ODBC source is unavailable")
+		}
+		return value, nil
+	}}
+}
+
+func odbcConnectionString(connection, username, password string) string {
+	value := strings.TrimSuffix(connection, ";")
+	if username != "" {
+		value += ";UID={" + strings.ReplaceAll(username, "}", "}}") + "}"
+	}
+	if password != "" {
+		value += ";PWD={" + strings.ReplaceAll(password, "}", "}}") + "}"
+	}
+	return value
+}
 
 func randomToken() (string, error) {
 	value := make([]byte, 32)

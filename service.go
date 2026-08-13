@@ -42,6 +42,7 @@ type Status struct {
 
 type Options struct {
 	ExtensionDir string
+	AllowedPaths []string
 	ListenHost   string
 	ListenPort   int
 	Token        string

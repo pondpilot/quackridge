@@ -13,7 +13,7 @@ import (
 	"time"
 
 	quackridge "github.com/pondpilot/quackridge"
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 func protocolClient(t *testing.T, logger *slog.Logger) (context.Context, *Runtime, *sql.DB) {
@@ -97,7 +97,7 @@ func TestProtocolMetadataTypesQueryIDsAndStableFailures(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	ctx, _, client := protocolClient(t, logger)
 
-	rows, err := client.QueryContext(ctx, remoteQuery("DESCRIBE SELECT * FROM quackridge_metadata_v1()"))
+	rows, err := client.QueryContext(ctx, remoteQuery("DESCRIBE SELECT * FROM quackridge_metadata_v2()"))
 	if err != nil {
 		t.Fatal(err)
 	}

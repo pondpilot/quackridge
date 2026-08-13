@@ -71,12 +71,14 @@ func run(args []string) error {
 		{name: root + "/SECURITY.md", path: "SECURITY.md", mode: 0o644},
 		{name: root + "/THIRD_PARTY_NOTICES.md", path: "THIRD_PARTY_NOTICES.md", mode: 0o644},
 		{name: root + "/licenses/DuckDB-LICENSE", path: "third_party/duckdb/LICENSE", mode: 0o644},
+		{name: root + "/licenses/ODBC-Scanner-LICENSE", path: "third_party/odbc-scanner/LICENSE", mode: 0o644},
 		{name: root + "/licenses/Quack-LICENSE", path: "third_party/quack/LICENSE", mode: 0o644},
 		{name: root + "/sbom.spdx.json", path: *sbom, mode: 0o644},
 	}
 	for _, name := range []string{
 		"extensions.sha256", "extensions.upstream", "extensions.versions", "httpfs.duckdb_extension",
-		"postgres_scanner.duckdb_extension", "quack.duckdb_extension",
+		"mysql_scanner.duckdb_extension", "odbc_scanner.duckdb_extension", "postgres_scanner.duckdb_extension",
+		"quack.duckdb_extension", "sqlite_scanner.duckdb_extension",
 	} {
 		files = append(files, entry{name: root + "/extensions/" + name, path: filepath.Join(*extensions, name), mode: 0o644})
 	}

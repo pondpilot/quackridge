@@ -27,6 +27,7 @@ type Source struct {
 	Name          string          `json:"name"`
 	Alias         string          `json:"alias"`
 	Type          string          `json:"type"`
+	DatabaseType  string          `json:"database_type,omitempty"`
 	Enabled       bool            `json:"enabled"`
 	CredentialRef string          `json:"credential_ref"`
 	Options       json.RawMessage `json:"options"`
@@ -50,8 +51,8 @@ func (d Document) Validate() error {
 	aliases := make(map[string]struct{}, len(d.Sources))
 	credentialRefs := make(map[string]struct{}, len(d.Sources))
 	for _, configured := range d.Sources {
-		if configured.ID == "" || configured.Name == "" || configured.Type == "" || configured.CredentialRef == "" {
-			return errors.New("source id, name, type, and credential reference are required")
+		if configured.ID == "" || configured.Name == "" || configured.Type == "" {
+			return errors.New("source id, name, and type are required")
 		}
 		if err := source.ValidateAlias(configured.Alias); err != nil {
 			return err
@@ -62,12 +63,14 @@ func (d Document) Validate() error {
 		if _, exists := aliases[configured.Alias]; exists {
 			return fmt.Errorf("duplicate source alias %q", configured.Alias)
 		}
-		if _, exists := credentialRefs[configured.CredentialRef]; exists {
-			return fmt.Errorf("duplicate credential reference %q", configured.CredentialRef)
+		if configured.CredentialRef != "" {
+			if _, exists := credentialRefs[configured.CredentialRef]; exists {
+				return fmt.Errorf("duplicate credential reference %q", configured.CredentialRef)
+			}
+			credentialRefs[configured.CredentialRef] = struct{}{}
 		}
 		ids[configured.ID] = struct{}{}
 		aliases[configured.Alias] = struct{}{}
-		credentialRefs[configured.CredentialRef] = struct{}{}
 		if err := validateOptions(configured.Options); err != nil {
 			return fmt.Errorf("source %q options: %w", configured.ID, err)
 		}
@@ -100,7 +103,7 @@ func containsSecretField(value any) bool {
 	case map[string]any:
 		for key, child := range current {
 			normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-			if slices.Contains([]string{"password", "passwd", "secret", "token", "dsn", "connection_string", "uri"}, normalized) {
+			if slices.Contains([]string{"password", "passwd", "secret", "token", "connection_string", "uri"}, normalized) {
 				return true
 			}
 			if containsSecretField(child) {

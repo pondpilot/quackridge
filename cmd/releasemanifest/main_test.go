@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 func TestVerifyManifestHashesArchiveContents(t *testing.T) {
 	directory := t.TempDir()
 	manifest := protocol.ReleaseManifest{
 		Version: "0.1.0", Channel: "prerelease",
-		Protocol: protocol.ProtocolRange{Minimum: 1, Maximum: 1},
+		Protocol: protocol.ProtocolRange{Minimum: 2, Maximum: 2},
 	}
 	targets := []struct{ os, arch, name string }{
 		{"darwin", "amd64", "quackridge_0.1.0_darwin_amd64.tar.gz"},

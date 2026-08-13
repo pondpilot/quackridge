@@ -11,7 +11,7 @@ requires the GitHub `Native release` workflow to pass every gate below.
 - [ ] Each deterministic archive contains the binary, exact extension set, upstream checksums/URLs, license texts, notices, and an SPDX JSON SBOM.
 - [ ] Every archive has a Sigstore bundle issued to this repository's release workflow.
 - [ ] The exact assembled archive is extracted and starts successfully on its matching native runner before publication.
-- [ ] `release-manifest.json` validates against protocol v1 and contains only the three smoke-tested assets.
+- [ ] `release-manifest.json` validates against protocol v2 and contains only the smoke-tested assets.
 - [ ] The combined checksums and release manifest are keyless-signed and verified before upload.
 - [ ] Secret scanning confirms no passwords, DSNs, tokens, SQL text, temporary credentials, private result data, or private paths appear in artifacts, logs, screenshots, or traces.
 - [ ] PondPilot's pinned native browser suite passes pairing, metadata trees, previews, single- and multi-table queries, exports, reload/reconnect, denied SQL, pairing failures, token rotation, partial source failure, and the visible cancellation no-op state.

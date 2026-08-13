@@ -94,6 +94,21 @@ jobs:
         env:
           QUACKRIDGE_EXTENSION_DIR: ${{ github.workspace }}/build/extensions
         run: go test -tags=integration -run TestPostgresServerSideJoinAndMetadata -count=1 ./internal/engine
+      - name: Linux MySQL/MariaDB attach and metadata smoke test
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          QUACKRIDGE_EXTENSION_DIR: ${{ github.workspace }}/build/extensions
+        run: go test -tags=integration -run TestMySQLMariaDBAttachAndMetadata -count=1 ./internal/engine
+      - name: Install Linux ODBC test dependencies
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y unixodbc libsqliteodbc
+      - name: Linux file connectors and ODBC mixed-query smoke test
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          QUACKRIDGE_EXTENSION_DIR: ${{ github.workspace }}/build/extensions
+        run: go test -tags=integration -run TestFileConnectorsAndODBCJoin -count=1 ./internal/engine
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d # v0.20.10
         with:

@@ -4,8 +4,8 @@ import "slices"
 
 const (
 	Product         = "quackridge"
-	ProtocolVersion = 1
-	MetadataVersion = 1
+	ProtocolVersion = 2
+	MetadataVersion = 2
 	DuckDBVersion   = "1.5.5"
 )
 
@@ -13,9 +13,10 @@ const (
 // deliberately identify themselves as unshipped.
 var Version = "0.1.0-dev"
 
-var capabilities = []string{"cancellation_noop", "metadata_v1", "pairing_v1", "query_ids", "sticky_sessions"}
+var capabilities = []string{"cancellation_noop", "metadata_v2", "pairing_v2", "query_ids", "sticky_sessions"}
 var extensionVersions = map[string]string{
-	"httpfs": "827222f", "postgres_scanner": "41223e5", "quack": "c154811",
+	"httpfs": "827222f", "mysql_scanner": "7267164", "odbc_scanner": "274a330",
+	"postgres_scanner": "41223e5", "quack": "c154811", "sqlite_scanner": "f79b1db",
 }
 
 // Capabilities returns a copy of the immutable protocol capability set.

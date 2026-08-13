@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,9 @@ import (
 	"github.com/pondpilot/quackridge/internal/pairing"
 	"github.com/pondpilot/quackridge/internal/secrets"
 	"github.com/pondpilot/quackridge/internal/source"
+	"github.com/pondpilot/quackridge/internal/source/filedb"
+	"github.com/pondpilot/quackridge/internal/source/mysql"
+	"github.com/pondpilot/quackridge/internal/source/odbc"
 	"github.com/pondpilot/quackridge/internal/source/postgres"
 )
 
@@ -140,16 +144,31 @@ func (a *App) source(args []string) error {
 }
 
 type sourceFlags struct {
-	configPath, id, name, alias, host, database, user, sslMode, rootCertRef string
-	port                                                                    int
-	passwordStdin                                                           bool
-	jsonOutput                                                              bool
+	sourceType, configPath, id, name, alias, host, database, user, sslMode, rootCertRef string
+	path, dsn, driver, databaseType                                                     string
+	properties                                                                          stringMapFlag
+	port                                                                                int
+	passwordStdin                                                                       bool
+	jsonOutput                                                                          bool
+}
+
+type stringMapFlag map[string]string
+
+func (values stringMapFlag) String() string { return "" }
+func (values stringMapFlag) Set(raw string) error {
+	key, value, ok := strings.Cut(raw, "=")
+	if !ok || key == "" {
+		return errors.New("property must use key=value")
+	}
+	values[key] = value
+	return nil
 }
 
 func (a *App) parseSourceFlags(command string, args []string) (sourceFlags, error) {
-	if len(args) == 0 || args[0] != "postgres" {
-		return sourceFlags{}, errors.New("source type must be postgres")
+	if len(args) == 0 || !slices.Contains([]string{"postgres", "mysql", "sqlite", "duckdb", "odbc"}, args[0]) {
+		return sourceFlags{}, errors.New("source type must be postgres, mysql, sqlite, duckdb, or odbc")
 	}
+	sourceType := args[0]
 	args = args[1:]
 	defaultPath, err := config.DefaultPath()
 	if err != nil {
@@ -157,17 +176,26 @@ func (a *App) parseSourceFlags(command string, args []string) (sourceFlags, erro
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(a.Stderr)
-	var values sourceFlags
+	values := sourceFlags{sourceType: sourceType, properties: make(stringMapFlag)}
 	flags.StringVar(&values.configPath, "config", defaultPath, "configuration path")
 	flags.StringVar(&values.id, "id", "", "source ID")
 	flags.StringVar(&values.name, "name", "", "display name")
 	flags.StringVar(&values.alias, "alias", "", "DuckDB catalog alias")
 	flags.StringVar(&values.host, "host", "", "PostgreSQL host")
-	flags.IntVar(&values.port, "port", 5432, "PostgreSQL port")
-	flags.StringVar(&values.database, "database", "", "PostgreSQL database")
-	flags.StringVar(&values.user, "user", "", "PostgreSQL user")
-	flags.StringVar(&values.sslMode, "ssl-mode", "require", "PostgreSQL SSL mode")
+	defaultPort, defaultSSLMode := 5432, "require"
+	if sourceType == "mysql" {
+		defaultPort, defaultSSLMode = 3306, "preferred"
+	}
+	flags.IntVar(&values.port, "port", defaultPort, "database port")
+	flags.StringVar(&values.database, "database", "", "database name")
+	flags.StringVar(&values.user, "user", "", "database user")
+	flags.StringVar(&values.sslMode, "ssl-mode", defaultSSLMode, "database SSL mode")
 	flags.StringVar(&values.rootCertRef, "root-certificate-ref", "", "root certificate reference")
+	flags.StringVar(&values.path, "path", "", "absolute SQLite or DuckDB file path")
+	flags.StringVar(&values.dsn, "dsn", "", "ODBC data source name")
+	flags.StringVar(&values.driver, "driver", "", "ODBC driver name")
+	flags.StringVar(&values.databaseType, "database-type", "", "semantic database type")
+	flags.Var(values.properties, "property", "ODBC connection property as key=value (repeatable)")
 	flags.BoolVar(&values.passwordStdin, "password-stdin", false, "read password from standard input")
 	flags.BoolVar(&values.jsonOutput, "json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
@@ -184,27 +212,55 @@ func (a *App) sourceAdd(args []string, persist bool) error {
 	if err != nil {
 		return err
 	}
-	credential, err := a.readPassword(values.passwordStdin)
-	if err != nil {
-		return err
-	}
-	defer clear(credential)
-	options, _ := json.Marshal(postgres.Config{
-		Host: values.host, Port: values.port, Database: values.database,
-		User: values.user, SSLMode: values.sslMode, RootCertRef: values.rootCertRef,
-	})
-	configured := config.Source{
-		ID: values.id, Name: values.name, Alias: values.alias, Type: "postgres", Enabled: true,
-		CredentialRef: "quackridge/source/" + values.id, Options: options,
-	}
-	validator := postgresValidator{}
-	configuration := config.Service{Store: config.Store{Path: values.configPath}, Validator: validator}
-	if persist {
-		credentialStore, err := secrets.NewSystemStore()
+	var credential []byte
+	if values.sourceType == "postgres" || values.sourceType == "mysql" ||
+		(values.sourceType == "odbc" && (values.user != "" || values.passwordStdin)) {
+		credential, err = a.readPassword(values.passwordStdin)
 		if err != nil {
 			return err
 		}
-		configuration.Credentials = credentialStore
+	}
+	defer clear(credential)
+	var options []byte
+	var validator config.Validator
+	databaseType := values.databaseType
+	switch values.sourceType {
+	case "postgres":
+		options, _ = json.Marshal(postgres.Config{Host: values.host, Port: values.port, Database: values.database, User: values.user, SSLMode: values.sslMode, RootCertRef: values.rootCertRef})
+		validator, databaseType = postgresValidator{}, "postgres"
+	case "mysql":
+		options, _ = json.Marshal(mysql.Config{Host: values.host, Port: values.port, Database: values.database, User: values.user, SSLMode: values.sslMode})
+		validator = mysqlValidator{}
+	case "sqlite", "duckdb":
+		options, _ = json.Marshal(filedb.Config{Path: values.path})
+		validator, databaseType = fileValidator{connector: values.sourceType}, values.sourceType
+	case "odbc":
+		if databaseType == "" {
+			databaseType = "odbc"
+		}
+		options, _ = json.Marshal(odbc.Config{DSN: values.dsn, Driver: values.driver, Properties: values.properties, DatabaseType: databaseType})
+		validator = odbcValidator{}
+		if len(credential) > 0 {
+			credential, _ = json.Marshal(odbc.Credential{Username: values.user, Password: string(credential)})
+		}
+	}
+	credentialRef := ""
+	if len(credential) > 0 {
+		credentialRef = "quackridge/source/" + values.id
+	}
+	configured := config.Source{
+		ID: values.id, Name: values.name, Alias: values.alias, Type: values.sourceType, DatabaseType: databaseType, Enabled: true,
+		CredentialRef: credentialRef, Options: options,
+	}
+	configuration := config.Service{Store: config.Store{Path: values.configPath}, Validator: validator}
+	if persist {
+		if credentialRef != "" {
+			credentialStore, err := secrets.NewSystemStore()
+			if err != nil {
+				return err
+			}
+			configuration.Credentials = credentialStore
+		}
 		err = configuration.Add(context.Background(), configured, credential)
 	} else {
 		err = configuration.Test(context.Background(), configured, credential)
@@ -236,7 +292,50 @@ func (postgresValidator) Validate(ctx context.Context, configured config.Source,
 	adapter := postgres.New(nil, options, postgres.Credential{Password: string(credential)})
 	return adapter.Validate(ctx, source.Definition{
 		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		Type: configured.Type, Enabled: configured.Enabled,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
+	})
+}
+
+type mysqlValidator struct{}
+
+func (mysqlValidator) Validate(ctx context.Context, configured config.Source, credential []byte) error {
+	var options mysql.Config
+	if err := json.Unmarshal(configured.Options, &options); err != nil {
+		return err
+	}
+	return mysql.New(nil, options, mysql.Credential{Password: string(credential)}).Validate(ctx, source.Definition{
+		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
+	})
+}
+
+type fileValidator struct{ connector string }
+
+func (v fileValidator) Validate(ctx context.Context, configured config.Source, _ []byte) error {
+	var options filedb.Config
+	if err := json.Unmarshal(configured.Options, &options); err != nil {
+		return err
+	}
+	return filedb.New(nil, v.connector, options).Validate(ctx, source.Definition{
+		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
+	})
+}
+
+type odbcValidator struct{}
+
+func (odbcValidator) Validate(ctx context.Context, configured config.Source, credential []byte) error {
+	var options odbc.Config
+	if err := json.Unmarshal(configured.Options, &options); err != nil {
+		return err
+	}
+	decoded, err := odbc.DecodeCredential(credential)
+	if err != nil {
+		return err
+	}
+	return odbc.New(nil, options, decoded).Validate(ctx, source.Definition{
+		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
+		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
 	})
 }
 
@@ -253,11 +352,11 @@ func (a *App) readPassword(fromStdin bool) ([]byte, error) {
 	if !ok || !term.IsTerminal(int(file.Fd())) {
 		return nil, errors.New("use --password-stdin when standard input is not a terminal")
 	}
-	fmt.Fprint(a.Stderr, "PostgreSQL password: ")
+	fmt.Fprint(a.Stderr, "Database password: ")
 	value, err := term.ReadPassword(int(file.Fd()))
 	fmt.Fprintln(a.Stderr)
 	if err != nil || len(value) == 0 {
-		return nil, errors.New("read PostgreSQL password")
+		return nil, errors.New("read database password")
 	}
 	return value, nil
 }
@@ -296,9 +395,19 @@ func (a *App) sourceRemove(args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("usage: quackridge source remove <source-id>")
 	}
-	credentialStore, err := secrets.NewSystemStore()
+	document, err := (config.Store{Path: *path}).Load()
 	if err != nil {
 		return err
+	}
+	var credentialStore secrets.Store
+	for _, configured := range document.Sources {
+		if configured.ID == flags.Arg(0) && configured.CredentialRef != "" {
+			credentialStore, err = secrets.NewSystemStore()
+			if err != nil {
+				return err
+			}
+			break
+		}
 	}
 	service := config.Service{Store: config.Store{Path: *path}, Credentials: credentialStore}
 	if err := service.Remove(context.Background(), flags.Arg(0)); err != nil {
@@ -328,7 +437,7 @@ func (a *App) serve(args []string) error {
 	var err error
 	switch *credentialProvider {
 	case "system":
-		credentialStore, err = secrets.NewSystemStore()
+		credentialStore = secrets.NewLazySystemStore()
 	case "environment":
 		credentialStore = secrets.Environment{}
 	default:

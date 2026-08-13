@@ -1,6 +1,6 @@
 # Install and configure QuackRidge
 
-QuackRidge v0.1 is experimental. Install only an archive linked from the signed
+QuackRidge is experimental. Install only an archive linked from the signed
 release manifest. PondPilot downloads an archive but cannot launch it, move it,
 or grant it operating-system permissions.
 
@@ -69,6 +69,34 @@ to macOS Keychain, Windows Credential Manager, or Linux Secret Service. They are
 never stored in the JSON configuration. SSL modes are `disable`, `allow`,
 `prefer`, `require`, `verify-ca`, and `verify-full`; production sources should
 use `verify-full` whenever possible.
+
+MySQL uses the same host, port, database, user, password-input, and SSL flags:
+
+```sh
+quackridge source add mysql --id commerce --name Commerce --alias commerce \
+  --host db.internal --port 3306 --database commerce --user quackridge_reader \
+  --ssl-mode required --password-stdin
+```
+
+SQLite and DuckDB files require an absolute path and no credential:
+
+```sh
+quackridge source add sqlite --id support --name Support --alias support \
+  --path /absolute/path/support.sqlite
+quackridge source add duckdb --id archive --name Archive --alias archive \
+  --path /absolute/path/archive.duckdb
+```
+
+ODBC requires either a configured DSN or driver, a semantic database type, and
+repeatable non-secret connection properties. The driver manager and driver must
+already work for the QuackRidge process; on Linux and macOS this means unixODBC
+must be installed. Credentials are accepted separately and never persisted in
+the connection properties.
+
+```sh
+quackridge source add odbc --id support --name Support --alias support \
+  --dsn support --database-type sqlserver --user quackridge_reader --password-stdin
+```
 
 ## Run, diagnose, and pair
 

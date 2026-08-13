@@ -72,7 +72,7 @@ func TestQuackIdentityAndShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta := string(metaBytes)
-	if name != "QuackRidge" || !strings.Contains(meta, `"protocol_version":1`) {
+	if name != "QuackRidge" || !strings.Contains(meta, `"protocol_version":2`) {
 		t.Fatalf("identity name=%q meta=%q", name, meta)
 	}
 	var identity struct {

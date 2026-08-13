@@ -23,14 +23,17 @@ var queryIDPattern = regexp.MustCompile(`/\*\s*quackridge-query-id:([A-Za-z0-9_-
 var forbiddenFunctions = map[string]struct{}{
 	"getenv": {}, "glob": {}, "http_get": {}, "http_post": {},
 	"postgres_attach": {}, "postgres_execute": {}, "postgres_query": {}, "postgres_scan": {},
-	"query": {}, "query_table": {}, "read_blob": {}, "read_csv": {}, "read_csv_auto": {},
+	"mysql_attach": {}, "mysql_execute": {}, "mysql_query": {}, "mysql_scan": {},
+	"odbc_begin_transaction": {}, "odbc_close": {}, "odbc_commit": {}, "odbc_connect": {}, "odbc_copy": {}, "odbc_query": {}, "odbc_rollback": {},
+	"quackridge_odbc_connection": {},
+	"query":                      {}, "query_table": {}, "read_blob": {}, "read_csv": {}, "read_csv_auto": {},
 	"read_json": {}, "read_json_auto": {}, "read_ndjson": {}, "read_parquet": {}, "read_text": {},
 	"setvariable": {}, "which_secret": {},
 }
 
 var allowedTableFunctions = map[string]struct{}{
-	"duckdb_columns": {}, "duckdb_databases": {}, "duckdb_schemas": {}, "duckdb_tables": {}, "duckdb_types": {}, "duckdb_views": {},
-	"generate_series": {}, "quackridge_active_queries_v1": {}, "quackridge_metadata_v1": {}, "range": {}, "unnest": {}, "whoami": {},
+	"duckdb_columns": {}, "duckdb_schemas": {}, "duckdb_tables": {}, "duckdb_types": {}, "duckdb_views": {},
+	"generate_series": {}, "quackridge_active_queries_v1": {}, "quackridge_metadata_v2": {}, "range": {}, "unnest": {}, "whoami": {},
 }
 
 // Evaluator owns an isolated DuckDB parser. It never executes submitted SQL.
@@ -155,7 +158,7 @@ func inspectTree(value any) bool {
 	case map[string]any:
 		if functionName, ok := node["function_name"].(string); ok {
 			name := strings.ToLower(functionName)
-			if _, denied := forbiddenFunctions[name]; denied || strings.HasPrefix(name, "postgres_") || strings.HasPrefix(name, "read_") || strings.HasPrefix(name, "http_") {
+			if _, denied := forbiddenFunctions[name]; denied || strings.HasPrefix(name, "postgres_") || strings.HasPrefix(name, "mysql_") || strings.HasPrefix(name, "odbc_") || strings.HasPrefix(name, "read_") || strings.HasPrefix(name, "http_") {
 				return false
 			}
 		}

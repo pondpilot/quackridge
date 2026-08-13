@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	quackridge "github.com/pondpilot/quackridge"
 	"github.com/pondpilot/quackridge/internal/config"
 	"github.com/pondpilot/quackridge/internal/secrets"
 )
@@ -28,7 +29,7 @@ func TestRunVerifiesConfigurationCredentialsAndExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var checksums string
-	for _, name := range []string{"httpfs.duckdb_extension", "postgres_scanner.duckdb_extension", "quack.duckdb_extension"} {
+	for _, name := range []string{"httpfs.duckdb_extension", "mysql_scanner.duckdb_extension", "odbc_scanner.duckdb_extension", "postgres_scanner.duckdb_extension", "quack.duckdb_extension", "sqlite_scanner.duckdb_extension"} {
 		contents := []byte("test-" + name)
 		if err := os.WriteFile(filepath.Join(extensionDir, name), contents, 0o600); err != nil {
 			t.Fatal(err)
@@ -36,7 +37,7 @@ func TestRunVerifiesConfigurationCredentialsAndExtensions(t *testing.T) {
 		digest := sha256.Sum256(contents)
 		checksums += fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), name)
 	}
-	versions := []byte("duckdb 1.5.5\nhttpfs 827222f\npostgres_scanner 41223e5\nquack c154811\n")
+	versions := []byte("duckdb 1.5.5\nhttpfs 827222f\nmysql_scanner 7267164\nodbc_scanner 274a330\npostgres_scanner 41223e5\nquack c154811\nsqlite_scanner f79b1db\n")
 	if err := os.WriteFile(filepath.Join(extensionDir, "extensions.versions"), versions, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,11 @@ func TestSourceDiagnosticFailuresAffectReportLevels(t *testing.T) {
 func TestExtensionVersionPairMustMatchBuild(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "extensions.versions")
-	if err := os.WriteFile(path, []byte("duckdb 9.9.9\nhttpfs 827222f\npostgres_scanner 41223e5\nquack c154811\n"), 0o600); err != nil {
+	versions := "duckdb 9.9.9\n"
+	for name, version := range quackridge.ExtensionVersions() {
+		versions += name + " " + version + "\n"
+	}
+	if err := os.WriteFile(path, []byte(versions), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkExtensionVersions(path); err == nil {

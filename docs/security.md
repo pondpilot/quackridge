@@ -13,8 +13,9 @@ Required extensions are loaded from verified local files before autoload and
 autoinstall are disabled.
 
 After startup, QuackRidge also rejects community and unsigned extensions,
-disables persistent DuckDB secrets and the local filesystem, constrains memory,
-threads, and temporary storage, and locks DuckDB configuration. PostgreSQL
+disables persistent DuckDB secrets, restricts local access to the engine sandbox,
+the verified extension directory, and explicitly configured database files,
+constrains memory, threads, and temporary storage, and locks DuckDB configuration. PostgreSQL
 credentials are transferred into a temporary in-memory DuckDB secret instead of
 being embedded in an `ATTACH` error or persisted to disk. The engine sandbox is
 removed on shutdown.

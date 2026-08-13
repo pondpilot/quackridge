@@ -6,7 +6,8 @@ archive under `licenses/`.
 
 | Component | Version/build | License | Upstream |
 | --- | --- | --- | --- |
-| DuckDB and `httpfs` / `postgres_scanner` | 1.5.5 | MIT | https://github.com/duckdb/duckdb |
+| DuckDB and `httpfs` / `mysql_scanner` / `postgres_scanner` / `sqlite_scanner` | 1.5.5 | MIT | https://github.com/duckdb/duckdb |
+| ODBC scanner extension | 274a330 | MIT | https://github.com/rupurt/odbc-scanner-duckdb-extension |
 | Quack extension | c154811 for DuckDB 1.5.5 | MIT | https://github.com/duckdb/duckdb-quack |
 | duckdb-go | 2.10505.0 | MIT | https://github.com/duckdb/duckdb-go |
 

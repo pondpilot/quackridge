@@ -120,7 +120,9 @@ func checkExtensions(directory string, report *Report) {
 	}
 	required := map[string]bool{
 		"extensions.versions": false, "httpfs.duckdb_extension": false,
+		"mysql_scanner.duckdb_extension": false, "odbc_scanner.duckdb_extension": false,
 		"postgres_scanner.duckdb_extension": false, "quack.duckdb_extension": false,
+		"sqlite_scanner.duckdb_extension": false,
 	}
 	for _, entry := range entries {
 		if _, wanted := required[entry.name]; !wanted {
@@ -212,6 +214,17 @@ func fileSHA256(path string) (string, error) {
 }
 
 func checkCredentials(ctx context.Context, document config.Document, options Options, report *Report) {
+	hasCredentials := false
+	for _, source := range document.Sources {
+		if source.Enabled && source.CredentialRef != "" {
+			hasCredentials = true
+			break
+		}
+	}
+	if !hasCredentials {
+		add(report, "credential_store", LevelOK, "no enabled source requires stored credentials", nil)
+		return
+	}
 	store := options.CredentialStore
 	provider := options.CredentialProvider
 	if provider == "" {
@@ -234,6 +247,9 @@ func checkCredentials(ctx context.Context, document config.Document, options Opt
 	}
 	missing := make([]string, 0)
 	for _, source := range document.Sources {
+		if source.CredentialRef == "" {
+			continue
+		}
 		if !source.Enabled {
 			continue
 		}

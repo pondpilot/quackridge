@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 func main() {
@@ -40,7 +40,7 @@ func run(args []string) error {
 	}
 	manifest := protocol.ReleaseManifest{
 		Version: *version, Channel: *channel,
-		Protocol: protocol.ProtocolRange{Minimum: 1, Maximum: 1},
+		Protocol: protocol.ProtocolRange{Minimum: 2, Maximum: 2},
 	}
 	targets := []struct{ os, arch, minimum string }{
 		{"darwin", "amd64", "macOS 13"}, {"darwin", "arm64", "macOS 13"},

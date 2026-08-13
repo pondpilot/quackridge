@@ -1,4 +1,4 @@
-package v1_test
+package v2_test
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	quackridge "github.com/pondpilot/quackridge"
-	protocol "github.com/pondpilot/quackridge/protocol/v1"
+	protocol "github.com/pondpilot/quackridge/protocol/v2"
 )
 
 func TestFixturesAreMachineReadableJSON(t *testing.T) {
@@ -51,7 +51,7 @@ func TestIdentityCompatibilityFailsClosed(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := current
-			candidate.SourceTypes = slices.Clone(current.SourceTypes)
+			candidate.ConnectorTypes = slices.Clone(current.ConnectorTypes)
 			candidate.Capabilities = slices.Clone(current.Capabilities)
 			test.mutate(&candidate)
 			if err := protocol.ValidateIdentity(candidate); !quackridge.IsCode(err, quackridge.CodeProtocolMismatch) {
