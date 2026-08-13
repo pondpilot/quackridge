@@ -5,6 +5,7 @@ package engine_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,7 +105,7 @@ func TestFileConnectorsAndODBCJoin(t *testing.T) {
 	odbcAdapter := odbc.New(runtime, odbc.Config{Driver: driver, DatabaseType: "sqlite", Properties: map[string]string{"Database": odbcSQLitePath}}, odbc.Credential{})
 	odbcDefinition := source.Definition{ID: "support_odbc", Name: "Support ODBC", Alias: "support_odbc", ConnectorType: "odbc", DatabaseType: "sqlite", Enabled: true}
 	if err := odbcAdapter.Attach(ctx, odbcDefinition); err != nil {
-		t.Fatal(err)
+		t.Fatalf("%v; cause: %v", err, errors.Unwrap(err))
 	}
 	if err := runtime.QueryRow(ctx, `SELECT sum(o.amount)::INTEGER FROM commerce.sales.orders o JOIN support_odbc.main.ticket t ON t.order_id = o.id WHERE t.state = 'closed'`).Scan(&total); err != nil {
 		t.Fatal(err)
