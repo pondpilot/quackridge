@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func DefaultAddress() (string, error) {
@@ -28,6 +29,11 @@ func listen(address string) (net.Listener, error) {
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("control address exists and is not a socket")
 		}
+		probe, dialErr := net.DialTimeout("unix", address, 250*time.Millisecond)
+		if dialErr == nil {
+			_ = probe.Close()
+			return nil, fmt.Errorf("control address is already in use")
+		}
 		if err := os.Remove(address); err != nil {
 			return nil, err
 		}
@@ -42,17 +48,28 @@ func listen(address string) (net.Listener, error) {
 		_ = listener.Close()
 		return nil, err
 	}
-	return &cleanupListener{Listener: listener, path: address}, nil
+	identity, err := os.Lstat(address)
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return &cleanupListener{Listener: listener, path: address, identity: identity}, nil
 }
 
 type cleanupListener struct {
 	net.Listener
-	path string
+	path     string
+	identity os.FileInfo
 }
 
 func (l *cleanupListener) Close() error {
 	err := l.Listener.Close()
-	removeErr := os.Remove(l.path)
+	removeErr := error(nil)
+	if current, statErr := os.Lstat(l.path); statErr == nil && os.SameFile(l.identity, current) {
+		removeErr = os.Remove(l.path)
+	} else if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		removeErr = statErr
+	}
 	if errors.Is(removeErr, fs.ErrNotExist) {
 		removeErr = nil
 	}
@@ -61,4 +78,9 @@ func (l *cleanupListener) Close() error {
 
 func dial(ctx context.Context, address string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", address)
+}
+
+func EndpointPresent(address string) bool {
+	_, err := os.Lstat(address)
+	return err == nil
 }

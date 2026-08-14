@@ -41,9 +41,17 @@ accepted experimental deviation.
 ## Non-goals and trusted boundary
 
 Version 0.1 does not provide write access, cross-engine joins, remote Quack
-exposure, multi-user sharing, background service installation, automatic
-updates, a native menu-bar application, or adapters other than PostgreSQL. The
+exposure, multi-user sharing, a privileged background service, or automatic
+updates. The native macOS menu-bar app supervises an unprivileged per-user
+backend and may register itself as an opt-in Login Item. The
 local operating-system user and the QuackRidge executable/extension directory
 are trusted. Browser content, pairing input, tokens, SQL, PostgreSQL responses,
 and network failures are untrusted. QuackRidge is a local isolation layer, not
 a multi-tenant security boundary.
+
+The app verifies a generated manifest of bundled backend bytes before launch.
+Its management socket is user-only and bounded; raw backend stdout/stderr is
+discarded and cannot be interpreted as a trusted lifecycle or log event. The
+app is not sandboxed because the backend must open configured database files
+and external ODBC drivers. Hardened Runtime and distribution signing are release
+gates applied after unsigned implementation validation.

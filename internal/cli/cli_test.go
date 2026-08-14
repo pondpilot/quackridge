@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pondpilot/quackridge/internal/config"
 )
 
 func TestVersionJSON(t *testing.T) {
@@ -104,5 +106,65 @@ func TestPasswordFlagIsNotAcceptedOrEchoed(t *testing.T) {
 	}
 	if strings.Contains(stdout.String()+stderr.String(), password) {
 		t.Fatal("rejected password argument was echoed")
+	}
+}
+
+func TestODBCSecurePropertiesAreAcceptedOnlyFromStdin(t *testing.T) {
+	marker := "synthetic-access-token"
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	var stdout, stderr bytes.Buffer
+	application := &App{Stdin: strings.NewReader(`{"username":"reader","password":"synthetic-password","secure_properties":{"AccessToken":"` + marker + `"}}`), Stdout: &stdout, Stderr: &stderr}
+	code := application.Run([]string{"source", "test", "odbc", "--config", configPath, "--id", "support", "--name", "Support", "--alias", "support", "--driver", "ODBC Driver", "--database-type", "sqlserver", "--odbc-credential-stdin", "--json"})
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String(), marker) {
+		t.Fatal("secure ODBC property leaked to output")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	application.Stdin = strings.NewReader("")
+	code = application.Run([]string{"source", "test", "odbc", "--config", configPath, "--id", "support", "--name", "Support", "--alias", "support", "--driver", "ODBC Driver", "--database-type", "sqlserver", "--property", "AccessToken=argv-secret"})
+	if code == 0 || !strings.Contains(stderr.String(), "not public") {
+		t.Fatalf("exit = %d, stderr=%s", code, stderr.String())
+	}
+}
+
+func TestSourceUpdateDisableAndEnableUseTransactionalService(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "support.sqlite")
+	configPath := filepath.Join(directory, "config.json")
+	if err := os.WriteFile(databasePath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	application := &App{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+	base := []string{"sqlite", "--config", configPath, "--id", "support", "--name", "Support", "--alias", "support", "--path", databasePath}
+	if code := application.Run(append([]string{"source", "add"}, base...)); code != 0 {
+		t.Fatalf("add = %d, %s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	updated := []string{"sqlite", "--config", configPath, "--id", "support", "--name", "Updated Support", "--alias", "support", "--path", databasePath}
+	if code := application.Run(append([]string{"source", "update"}, updated...)); code != 0 {
+		t.Fatalf("update = %d, %s", code, stderr.String())
+	}
+	if code := application.Run([]string{"source", "disable", "--config", configPath, "support"}); code != 0 {
+		t.Fatalf("disable = %d, %s", code, stderr.String())
+	}
+	document, err := (config.Store{Path: configPath}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Sources[0].Name != "Updated Support" || document.Sources[0].Enabled {
+		t.Fatalf("document = %#v", document)
+	}
+	if code := application.Run([]string{"source", "enable", "--config", configPath, "support"}); code != 0 {
+		t.Fatalf("enable = %d, %s", code, stderr.String())
+	}
+	document, _ = (config.Store{Path: configPath}).Load()
+	if !document.Sources[0].Enabled {
+		t.Fatal("source remained disabled")
 	}
 }

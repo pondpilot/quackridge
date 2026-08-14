@@ -19,8 +19,18 @@ import (
 )
 
 type testBackend struct {
-	mu        sync.Mutex
-	reloadErr error
+	mu         sync.Mutex
+	reloadErr  error
+	refreshErr error
+	mutation   config.Mutation
+}
+
+func (b *testBackend) MutateSource(_ context.Context, mutation config.Mutation) (config.Document, string, error) {
+	b.mu.Lock()
+	b.mutation = mutation
+	b.mu.Unlock()
+	document, _ := b.Configuration()
+	return document, strings.Repeat("a", 64), nil
 }
 
 func (*testBackend) Status() quackridge.Status {
@@ -31,9 +41,11 @@ func (b *testBackend) Reload(context.Context) error {
 	defer b.mu.Unlock()
 	return b.reloadErr
 }
+func (b *testBackend) RefreshSourceHealth(context.Context, string) error { return b.refreshErr }
 func (*testBackend) Configuration() (config.Document, error) {
 	return config.Document{Version: config.CurrentVersion, Sources: []config.Source{{
-		ID: "warehouse", Type: "postgres", CredentialRef: "quackridge/source/warehouse",
+		ID: "warehouse", Name: "Warehouse", Alias: "warehouse", Type: "postgres", Enabled: true,
+		CredentialRef: "quackridge/source/warehouse", Options: json.RawMessage(`{"host":"localhost"}`),
 	}}}, nil
 }
 func (*testBackend) Diagnostics(context.Context) (map[string]any, error) {
@@ -124,5 +136,54 @@ func TestControlManagementResponsesExcludeSecrets(t *testing.T) {
 		if string(encoded) == "" || strings.Contains(string(encoded), "super-secret-value") {
 			t.Fatalf("%s response exposed a secret: %s", operation, encoded)
 		}
+	}
+}
+
+func TestControlSourceMutationUsesStrictTypedPayload(t *testing.T) {
+	address := filepath.Join(t.TempDir(), "control.sock")
+	backend := &testBackend{}
+	server, err := Start(address, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	payload, err := json.Marshal(config.Mutation{Source: config.Source{ID: "warehouse"}, CredentialAction: config.CredentialReplace, Credential: []byte("synthetic")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := Call(t.Context(), address, Request{Operation: "source_add", Payload: payload})
+	if err != nil || !response.OK || response.Revision != strings.Repeat("a", 64) {
+		t.Fatalf("response = %#v, %v", response, err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.mutation.Operation != "add" || string(backend.mutation.Credential) != "synthetic" {
+		t.Fatalf("mutation = %#v", backend.mutation)
+	}
+
+	response, err = Call(t.Context(), address, Request{Operation: "source_add", Payload: json.RawMessage(`{"source":{},"credential_action":"none","unknown":true}`)})
+	if err != nil || response.OK || response.ErrorCode != quackridge.CodeValidation {
+		t.Fatalf("strict response = %#v, %v", response, err)
+	}
+}
+
+func TestControlRejectsOversizedRequestBeforeDial(t *testing.T) {
+	_, err := Call(t.Context(), filepath.Join(t.TempDir(), "missing.sock"), Request{Operation: "source_add", Payload: json.RawMessage(`{"value":"` + strings.Repeat("x", maxFrameSize) + `"}`)})
+	if err == nil || !strings.Contains(err.Error(), "frame limit") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestControlPreservesSourceRefreshValidationError(t *testing.T) {
+	address := filepath.Join(t.TempDir(), "control.sock")
+	backend := &testBackend{refreshErr: &quackridge.Error{Code: quackridge.CodeValidation, Message: "source was not found"}}
+	server, err := Start(address, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	response, err := Call(t.Context(), address, Request{Operation: "source_refresh", Payload: json.RawMessage(`{"id":"missing"}`)})
+	if err != nil || response.OK || response.ErrorCode != quackridge.CodeValidation {
+		t.Fatalf("response = %#v, error = %v", response, err)
 	}
 }

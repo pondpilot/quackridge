@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://quackridge.pondpilot.io/protocol/management/v2/envelope.schema.json",
+  "oneOf":[{"$ref":"#/$defs/request"},{"$ref":"#/$defs/response"}],
+  "$defs":{
+    "requestId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._-]+$"},
+    "operation":{"enum":["handshake","status","configuration","diagnostics","service_reload","source_test","source_add","source_update","source_remove","source_set_enabled","source_refresh","certificate_import","certificate_list","certificate_remove","pair_start","pair_status","pair_cancel","manual_reveal_prepare","manual_reveal_consume","rotate_token"]},
+    "request":{"type":"object","additionalProperties":false,"required":["version","request_id","operation"],"properties":{"version":{"const":2},"request_id":{"$ref":"#/$defs/requestId"},"operation":{"$ref":"#/$defs/operation"},"payload":{"type":"object"}}},
+    "error":{"type":"object","additionalProperties":false,"required":["code","message"],"properties":{"code":{"type":"string","pattern":"^QR_[A-Z_]+$"},"message":{"type":"string","minLength":1,"maxLength":512},"field":{"type":"string","maxLength":128},"recovery":{"type":"object","additionalProperties":{"type":"string","maxLength":512}}}},
+    "response":{"type":"object","additionalProperties":false,"required":["version","request_id","ok"],"properties":{"version":{"const":2},"request_id":{"$ref":"#/$defs/requestId"},"ok":{"type":"boolean"},"error":{"$ref":"#/$defs/error"},"error_code":{"type":"string"},"message":{"type":"string"},"status":{"type":"object"},"configuration":{"type":"object"},"revision":{"type":"string","pattern":"^[a-f0-9]{64}$"},"diagnostics":{"type":"object"},"version_info":{"type":"object"},"pairing":{"type":"object"},"pairing_state":{"type":"object"},"manual_reveal":{"type":"object"},"sensitive":{"type":"object"},"certificates":{"type":"array"},"daemon_instance_id":{"type":"string","pattern":"^[a-f0-9]{32}$"},"pairing_generation":{"type":"string","pattern":"^[a-f0-9]{32}$"}},"allOf":[{"if":{"properties":{"ok":{"const":true}}},"then":{"not":{"required":["error"]}}},{"if":{"properties":{"ok":{"const":false}}},"then":{"required":["error"]}}]}
+  }
+}

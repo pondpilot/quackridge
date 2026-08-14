@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,22 @@ func TestConfigRejectsDuplicatesAndSecrets(t *testing.T) {
 	document.Sources[0].Options = json.RawMessage(`{"host":"localhost","nested":{"password":"leak"}}`)
 	if err := document.Validate(); err == nil {
 		t.Fatal("secret-bearing options were accepted")
+	}
+}
+
+func TestConfigRejectsUnknownODBCProperties(t *testing.T) {
+	document := Document{Version: CurrentVersion, Sources: []Source{{ID: "support", Name: "Support", Alias: "support", Type: "odbc", DatabaseType: "sqlserver", Enabled: true,
+		Options: json.RawMessage(`{"driver":"ODBC Driver","database_type":"sqlserver","properties":{"Server":"localhost","AccessKey":"must-be-keychain"}}`)}}}
+	if err := document.Validate(); err == nil {
+		t.Fatal("unknown ODBC property entered plain configuration")
+	}
+}
+
+func TestConfigRejectsDocumentLargerThanManagementFrameBudget(t *testing.T) {
+	document := testDocument()
+	document.Sources[0].Name = strings.Repeat("n", MaxDocumentSize)
+	if err := document.Validate(); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized configuration error = %v", err)
 	}
 }
 

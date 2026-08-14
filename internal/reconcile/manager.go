@@ -152,11 +152,25 @@ func (m *Manager) Validate(ctx context.Context, configured config.Source, creden
 // Diagnostics performs bounded live health and read-only-posture checks without
 // returning credentials, connection strings, or adapter error details.
 func (m *Manager) Diagnostics(ctx context.Context) []SourceDiagnostic {
+	return m.DiagnosticsFor(ctx)
+}
+
+// DiagnosticsFor runs sanitized health checks only for requested source IDs.
+// An empty list selects every active source.
+func (m *Manager) DiagnosticsFor(ctx context.Context, requested ...string) []SourceDiagnostic {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ids := make([]string, 0, len(m.active))
-	for id := range m.active {
-		ids = append(ids, id)
+	if len(requested) == 0 {
+		for id := range m.active {
+			ids = append(ids, id)
+		}
+	} else {
+		for _, id := range requested {
+			if _, ok := m.active[id]; ok {
+				ids = append(ids, id)
+			}
+		}
 	}
 	slices.Sort(ids)
 	result := make([]SourceDiagnostic, 0, len(ids))

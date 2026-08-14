@@ -37,6 +37,7 @@ make e2e
 ```
 
 See [the implementation plan](docs/plans/2026-08-11-quackridge-v1.md),
+[macOS app guide](docs/macos-app.md),
 [security policy](docs/security.md), [compatibility contract](docs/compatibility.md),
 [installation guide](docs/installation.md), [troubleshooting guide](docs/troubleshooting.md),
 [release checklist](docs/release-checklist.md), and [contribution guide](CONTRIBUTING.md).

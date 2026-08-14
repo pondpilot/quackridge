@@ -21,6 +21,12 @@ Clients must reject generic Quack servers, missing identity fields, older or
 newer protocol versions, and missing or unknown capabilities. The normative
 JSON schemas and examples are under [`protocol/v2`](../protocol/v2/).
 
+The macOS app and CLI use management protocol v2 over the per-user local
+control endpoint. Requests and responses are newline-delimited JSON capped at
+64 KiB, carry a unique request ID, and reject incompatible protocol versions.
+The normative management schemas and fixtures are under
+[`protocol/management/v2`](../protocol/management/v2/).
+
 The current Quack build has sticky server sessions and carries PondPilot query
 IDs in a leading `/* quackridge-query-id:<id> */` comment. That comment does not
 change SQL semantics and is emitted only as a sanitized structured-log field.

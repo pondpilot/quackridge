@@ -191,6 +191,26 @@ func TestDiagnosticsSanitizesHealthAndReportsPosture(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsForIsSourceScoped(t *testing.T) {
+	loader := &testLoader{document: config.Document{Version: config.CurrentVersion, Sources: []config.Source{
+		configured("one", adapterBehavior{}), configured("two", adapterBehavior{FailHealth: true}),
+	}}}
+	credentials := secrets.NewMemory()
+	_ = credentials.Put(t.Context(), "source/one", []byte("password"))
+	_ = credentials.Put(t.Context(), "source/two", []byte("password"))
+	manager, _ := New(loader, credentials, testFactory{events: &adapterEvents{}})
+	if _, err := manager.Bootstrap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := manager.DiagnosticsFor(t.Context(), "one")
+	if len(diagnostics) != 1 || diagnostics[0].ID != "one" || diagnostics[0].Health != "ready" {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if diagnostics := manager.DiagnosticsFor(t.Context(), "missing"); len(diagnostics) != 0 {
+		t.Fatalf("missing diagnostics = %#v", diagnostics)
+	}
+}
+
 func TestFingerprintIncludesSemanticDatabaseType(t *testing.T) {
 	configured := configured("warehouse", adapterBehavior{})
 	configured.DatabaseType = "mysql"

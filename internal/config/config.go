@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +13,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/pondpilot/quackridge/internal/odbcprops"
 	"github.com/pondpilot/quackridge/internal/source"
 )
 
-const CurrentVersion = 1
+const (
+	CurrentVersion  = 2
+	MaxDocumentSize = 48 << 10
+)
 
 type Document struct {
 	Version int      `json:"version"`
@@ -47,6 +52,13 @@ func (d Document) Validate() error {
 	if d.Version != CurrentVersion {
 		return fmt.Errorf("unsupported configuration version %d", d.Version)
 	}
+	encoded, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("encode configuration: %w", err)
+	}
+	if len(encoded) > MaxDocumentSize {
+		return fmt.Errorf("configuration exceeds %d bytes", MaxDocumentSize)
+	}
 	ids := make(map[string]struct{}, len(d.Sources))
 	aliases := make(map[string]struct{}, len(d.Sources))
 	credentialRefs := make(map[string]struct{}, len(d.Sources))
@@ -73,6 +85,20 @@ func (d Document) Validate() error {
 		aliases[configured.Alias] = struct{}{}
 		if err := validateOptions(configured.Options); err != nil {
 			return fmt.Errorf("source %q options: %w", configured.ID, err)
+		}
+		if configured.Type == "odbc" {
+			var options struct {
+				DatabaseType string            `json:"database_type"`
+				Properties   map[string]string `json:"properties"`
+			}
+			if err := json.Unmarshal(configured.Options, &options); err != nil {
+				return fmt.Errorf("source %q ODBC options are invalid", configured.ID)
+			}
+			for key := range options.Properties {
+				if !odbcprops.PublicAllowed(options.DatabaseType, key) {
+					return fmt.Errorf("source %q ODBC property %q must be stored as a secure credential", configured.ID, key)
+				}
+			}
 		}
 	}
 	return nil
@@ -145,7 +171,13 @@ func (s Store) Load() (Document, error) {
 		return migrated, nil
 	}
 	if errors.Is(err, fs.ErrNotExist) {
+		if recovered, recoveryErr, found := s.loadCommittedSnapshot(); found {
+			return recovered, recoveryErr
+		}
 		return Document{Version: CurrentVersion, Sources: []Source{}}, nil
+	}
+	if recovered, recoveryErr, found := s.loadCommittedSnapshot(); found {
+		return recovered, recoveryErr
 	}
 	backup, backupErr := loadFile(s.Path + ".bak")
 	if backupErr != nil {
@@ -156,6 +188,33 @@ func (s Store) Load() (Document, error) {
 		return Document{}, migrationErr
 	}
 	return recovered, nil
+}
+
+func (s Store) loadCommittedSnapshot() (Document, error, bool) {
+	root := filepath.Join(filepath.Dir(s.Path), "state-v2")
+	headPath := filepath.Join(root, "committed-head.json")
+	data, err := os.ReadFile(headPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Document{}, nil, false
+	}
+	if err != nil {
+		return Document{}, fmt.Errorf("read committed configuration head: %w", err), true
+	}
+	var head committedHead
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&head); err != nil || len(head.Revision) != 64 || head.Digest != head.Revision {
+		return Document{}, errors.New("committed configuration head is invalid; recovery stopped"), true
+	}
+	document, err := loadFile(filepath.Join(root, "recovery", head.Revision+".json"))
+	if err != nil {
+		return Document{}, errors.New("committed configuration snapshot is unavailable; recovery stopped"), true
+	}
+	revision, err := Revision(document)
+	if err != nil || revision != head.Revision {
+		return Document{}, errors.New("committed configuration snapshot digest mismatch; recovery stopped"), true
+	}
+	return document, nil, true
 }
 
 func loadFile(path string) (Document, error) {
@@ -176,6 +235,8 @@ func migrate(document Document) (Document, error) {
 	switch document.Version {
 	case 0:
 		document.Version = CurrentVersion
+	case 1:
+		document.Version = CurrentVersion
 	case CurrentVersion:
 	default:
 		return Document{}, fmt.Errorf("unsupported configuration version %d", document.Version)
@@ -187,6 +248,28 @@ func migrate(document Document) (Document, error) {
 		return Document{}, err
 	}
 	return document.Clone(), nil
+}
+
+// Revision returns a deterministic digest of the complete non-secret document.
+func Revision(document Document) (string, error) {
+	clone := document.Clone()
+	for index := range clone.Sources {
+		var options any
+		if err := json.Unmarshal(clone.Sources[index].Options, &options); err != nil {
+			return "", err
+		}
+		canonical, err := json.Marshal(options)
+		if err != nil {
+			return "", err
+		}
+		clone.Sources[index].Options = canonical
+	}
+	encoded, err := json.Marshal(clone)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 func (s Store) Save(document Document) error {

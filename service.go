@@ -23,11 +23,14 @@ const (
 )
 
 type SourceStatus struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Health    string `json:"health"`
-	ErrorCode string `json:"error_code,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Type        string     `json:"type"`
+	Health      string     `json:"health"`
+	Enabled     bool       `json:"enabled"`
+	ErrorCode   string     `json:"error_code,omitempty"`
+	LastCheckAt *time.Time `json:"last_check_at,omitempty"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
 }
 
 // Status is an immutable snapshot. Returned slices are cloned by Status.

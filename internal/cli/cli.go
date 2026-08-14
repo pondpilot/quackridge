@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -21,12 +22,14 @@ import (
 
 	quackridge "github.com/pondpilot/quackridge"
 	"github.com/pondpilot/quackridge/internal/app"
+	"github.com/pondpilot/quackridge/internal/certstore"
 	"github.com/pondpilot/quackridge/internal/config"
+	"github.com/pondpilot/quackridge/internal/connectors"
 	"github.com/pondpilot/quackridge/internal/control"
 	"github.com/pondpilot/quackridge/internal/doctor"
+	"github.com/pondpilot/quackridge/internal/lifecycle"
 	"github.com/pondpilot/quackridge/internal/pairing"
 	"github.com/pondpilot/quackridge/internal/secrets"
-	"github.com/pondpilot/quackridge/internal/source"
 	"github.com/pondpilot/quackridge/internal/source/filedb"
 	"github.com/pondpilot/quackridge/internal/source/mysql"
 	"github.com/pondpilot/quackridge/internal/source/odbc"
@@ -55,6 +58,8 @@ func (a *App) Run(args []string) int {
 		err = a.version(args[1:])
 	case "source":
 		err = a.source(args[1:])
+	case "certificate":
+		err = a.certificate(args[1:])
 	case "serve":
 		err = a.serve(args[1:])
 	case "status":
@@ -75,7 +80,141 @@ func (a *App) Run(args []string) int {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Stderr, "usage: quackridge <source|serve|status|doctor|pair|version>")
+	fmt.Fprintln(a.Stderr, "usage: quackridge <source|certificate|serve|status|doctor|pair|version>")
+}
+
+func certificateStore(configPath string) certstore.Store {
+	return certstore.Store{Root: filepath.Join(filepath.Dir(configPath), "state-v2", "certificates")}
+}
+
+func (a *App) certificate(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: quackridge certificate <import|list|remove>")
+	}
+	defaultPath, _ := config.DefaultPath()
+	flags := flag.NewFlagSet("certificate "+args[0], flag.ContinueOnError)
+	flags.SetOutput(a.Stderr)
+	path := flags.String("config", defaultPath, "configuration path")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	store := certificateStore(*path)
+	var operation string
+	var payload any
+	switch args[0] {
+	case "import":
+		if flags.NArg() != 1 {
+			return errors.New("usage: quackridge certificate import <pem-file>")
+		}
+		data, err := os.ReadFile(flags.Arg(0))
+		if err != nil {
+			return err
+		}
+		if len(data) > certstore.MaxBundleSize {
+			return fmt.Errorf("certificate file exceeds %d KiB", certstore.MaxBundleSize>>10)
+		}
+		operation, payload = "certificate_import", struct {
+			PEM []byte `json:"pem"`
+		}{data}
+	case "list":
+		if flags.NArg() != 0 {
+			return errors.New("usage: quackridge certificate list")
+		}
+		operation, payload = "certificate_list", nil
+	case "remove":
+		if flags.NArg() != 1 {
+			return errors.New("usage: quackridge certificate remove <reference>")
+		}
+		operation, payload = "certificate_remove", struct {
+			Reference string `json:"reference"`
+		}{flags.Arg(0)}
+	default:
+		return errors.New("usage: quackridge certificate <import|list|remove>")
+	}
+	defaultControl, _ := control.DefaultAddress()
+	if filepath.Clean(*path) == filepath.Clean(defaultPath) && control.EndpointPresent(defaultControl) {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		response, err := control.Call(context.Background(), defaultControl, control.Request{Operation: operation, Payload: raw})
+		if err != nil {
+			return &quackridge.Error{Code: quackridge.CodeIncompatible, Message: "live daemon certificate management is incompatible", Cause: err}
+		}
+		if !response.OK {
+			return responseError(response)
+		}
+		return printCertificates(a.Stdout, response.Certificates, *jsonOutput, args[0])
+	}
+	var certificates []certstore.Certificate
+	switch args[0] {
+	case "import":
+		certificate, err := store.Import(payload.(struct {
+			PEM []byte `json:"pem"`
+		}).PEM)
+		if err != nil {
+			return err
+		}
+		certificates = []certstore.Certificate{certificate}
+	case "list":
+		var err error
+		certificates, err = store.List()
+		if err != nil {
+			return err
+		}
+	case "remove":
+		reference := payload.(struct {
+			Reference string `json:"reference"`
+		}).Reference
+		manager := config.TransactionalService{Store: config.Store{Path: *path}, Credentials: secrets.NewLazySystemStore()}
+		if filepath.Clean(*path) == filepath.Clean(defaultPath) {
+			manager.AfterLock = func(context.Context) error {
+				if control.EndpointPresent(defaultControl) {
+					return &quackridge.Error{Code: quackridge.CodeIncompatible, Message: "a daemon started while certificate removal was waiting; retry the command"}
+				}
+				return nil
+			}
+		}
+		if err := manager.WithDocumentLock(context.Background(), func(document config.Document) error {
+			if certificateReferenced(document, reference) {
+				return errors.New("certificate is referenced by a source")
+			}
+			return store.Remove(reference)
+		}); err != nil {
+			return err
+		}
+	}
+	return printCertificates(a.Stdout, certificates, *jsonOutput, args[0])
+}
+
+func printCertificates(output io.Writer, certificates []certstore.Certificate, jsonOutput bool, operation string) error {
+	if jsonOutput {
+		return json.NewEncoder(output).Encode(certificates)
+	}
+	if operation == "remove" {
+		_, err := fmt.Fprintln(output, "certificate removed")
+		return err
+	}
+	for _, certificate := range certificates {
+		if _, err := fmt.Fprintf(output, "%s\t%d\n", certificate.Reference, certificate.Size); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func certificateReferenced(document config.Document, reference string) bool {
+	for _, configured := range document.Sources {
+		if configured.Type != "postgres" {
+			continue
+		}
+		var options postgres.Config
+		if json.Unmarshal(configured.Options, &options) == nil && options.RootCertRef == reference {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) version(args []string) error {
@@ -131,15 +270,21 @@ func (a *App) source(args []string) error {
 	}
 	switch args[0] {
 	case "add":
-		return a.sourceAdd(args[1:], true)
+		return a.sourceConfigure(args[1:], "add")
 	case "test":
-		return a.sourceAdd(args[1:], false)
+		return a.sourceConfigure(args[1:], "test")
+	case "update":
+		return a.sourceConfigure(args[1:], "update")
 	case "list":
 		return a.sourceList(args[1:])
 	case "remove":
 		return a.sourceRemove(args[1:])
+	case "enable":
+		return a.sourceSetEnabled(args[1:], true)
+	case "disable":
+		return a.sourceSetEnabled(args[1:], false)
 	default:
-		return errors.New("usage: quackridge source <add|list|test|remove>")
+		return errors.New("usage: quackridge source <add|test|update|list|remove|enable|disable>")
 	}
 }
 
@@ -149,6 +294,8 @@ type sourceFlags struct {
 	properties                                                                          stringMapFlag
 	port                                                                                int
 	passwordStdin                                                                       bool
+	odbcCredentialStdin                                                                 bool
+	keepCredential                                                                      bool
 	jsonOutput                                                                          bool
 }
 
@@ -197,6 +344,8 @@ func (a *App) parseSourceFlags(command string, args []string) (sourceFlags, erro
 	flags.StringVar(&values.databaseType, "database-type", "", "semantic database type")
 	flags.Var(values.properties, "property", "ODBC connection property as key=value (repeatable)")
 	flags.BoolVar(&values.passwordStdin, "password-stdin", false, "read password from standard input")
+	flags.BoolVar(&values.odbcCredentialStdin, "odbc-credential-stdin", false, "read ODBC credential JSON, including secure properties, from standard input")
+	flags.BoolVar(&values.keepCredential, "keep-credential", false, "reuse the existing credential during update or test")
 	flags.BoolVar(&values.jsonOutput, "json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
 		return sourceFlags{}, err
@@ -207,14 +356,30 @@ func (a *App) parseSourceFlags(command string, args []string) (sourceFlags, erro
 	return values, nil
 }
 
-func (a *App) sourceAdd(args []string, persist bool) error {
+func (a *App) sourceConfigure(args []string, operation string) error {
 	values, err := a.parseSourceFlags("source", args)
 	if err != nil {
 		return err
 	}
 	var credential []byte
-	if values.sourceType == "postgres" || values.sourceType == "mysql" ||
-		(values.sourceType == "odbc" && (values.user != "" || values.passwordStdin)) {
+	if values.keepCredential && operation == "add" {
+		return errors.New("--keep-credential requires update or test")
+	}
+	if values.odbcCredentialStdin && (values.sourceType != "odbc" || values.passwordStdin || values.keepCredential) {
+		return errors.New("--odbc-credential-stdin is only for ODBC and cannot be combined with --password-stdin")
+	}
+	if values.odbcCredentialStdin {
+		credential, err = io.ReadAll(io.LimitReader(a.Stdin, 64<<10))
+		if err != nil || len(bytes.TrimSpace(credential)) == 0 {
+			return errors.New("ODBC credential JSON is required on standard input")
+		}
+		if _, err := odbc.DecodeCredential(credential); err != nil {
+			clear(credential)
+			return err
+		}
+	}
+	if !values.keepCredential && (values.sourceType == "postgres" || values.sourceType == "mysql" ||
+		(values.sourceType == "odbc" && !values.odbcCredentialStdin && (values.user != "" || values.passwordStdin))) {
 		credential, err = a.readPassword(values.passwordStdin)
 		if err != nil {
 			return err
@@ -222,121 +387,134 @@ func (a *App) sourceAdd(args []string, persist bool) error {
 	}
 	defer clear(credential)
 	var options []byte
-	var validator config.Validator
 	databaseType := values.databaseType
 	switch values.sourceType {
 	case "postgres":
 		options, _ = json.Marshal(postgres.Config{Host: values.host, Port: values.port, Database: values.database, User: values.user, SSLMode: values.sslMode, RootCertRef: values.rootCertRef})
-		validator, databaseType = postgresValidator{}, "postgres"
+		databaseType = "postgres"
 	case "mysql":
 		options, _ = json.Marshal(mysql.Config{Host: values.host, Port: values.port, Database: values.database, User: values.user, SSLMode: values.sslMode})
-		validator = mysqlValidator{}
 	case "sqlite", "duckdb":
 		options, _ = json.Marshal(filedb.Config{Path: values.path})
-		validator, databaseType = fileValidator{connector: values.sourceType}, values.sourceType
+		databaseType = values.sourceType
 	case "odbc":
 		if databaseType == "" {
 			databaseType = "odbc"
 		}
+		for key := range values.properties {
+			if !odbc.PublicPropertyAllowed(databaseType, key) {
+				return fmt.Errorf("ODBC property %q is not public; use --odbc-credential-stdin", key)
+			}
+		}
 		options, _ = json.Marshal(odbc.Config{DSN: values.dsn, Driver: values.driver, Properties: values.properties, DatabaseType: databaseType})
-		validator = odbcValidator{}
-		if len(credential) > 0 {
+		if len(credential) > 0 && !values.odbcCredentialStdin {
 			credential, _ = json.Marshal(odbc.Credential{Username: values.user, Password: string(credential)})
 		}
 	}
-	credentialRef := ""
-	if len(credential) > 0 {
-		credentialRef = "quackridge/source/" + values.id
-	}
 	configured := config.Source{
 		ID: values.id, Name: values.name, Alias: values.alias, Type: values.sourceType, DatabaseType: databaseType, Enabled: true,
-		CredentialRef: credentialRef, Options: options,
+		Options: options,
 	}
-	configuration := config.Service{Store: config.Store{Path: values.configPath}, Validator: validator}
-	if persist {
-		if credentialRef != "" {
-			credentialStore, err := secrets.NewSystemStore()
-			if err != nil {
-				return err
-			}
-			configuration.Credentials = credentialStore
-		}
-		err = configuration.Add(context.Background(), configured, credential)
-	} else {
-		err = configuration.Test(context.Background(), configured, credential)
+	mutation := config.Mutation{Operation: operation, Source: configured, SourceID: values.id, CredentialAction: config.CredentialNone}
+	if values.keepCredential {
+		mutation.CredentialAction = config.CredentialKeep
 	}
+	if len(credential) > 0 {
+		mutation.CredentialAction, mutation.Credential = config.CredentialReplace, credential
+	}
+	certificates := certificateStore(values.configPath)
+	err = a.applySourceMutation(context.Background(), values.configPath, mutation, connectors.NewWithCertificates(certificates))
 	if err != nil {
 		return err
 	}
-	result := map[string]any{"ok": true, "source_id": configured.ID, "persisted": persist}
+	persisted := operation != "test"
+	result := map[string]any{"ok": true, "source_id": configured.ID, "persisted": persisted, "operation": operation}
 	if values.jsonOutput {
 		return json.NewEncoder(a.Stdout).Encode(result)
 	}
-	verb := "validated"
-	if persist {
-		verb = "added"
-	}
+	verb := map[string]string{"test": "validated", "add": "added", "update": "updated"}[operation]
 	fmt.Fprintf(a.Stdout, "source %s %s\n", configured.ID, verb)
 	return nil
 }
 
-type postgresValidator struct{}
-
-func (postgresValidator) Validate(ctx context.Context, configured config.Source, credential []byte) error {
-	var options postgres.Config
-	decoder := json.NewDecoder(bytes.NewReader(configured.Options))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&options); err != nil {
+func (a *App) sourceSetEnabled(args []string, enabled bool) error {
+	defaultPath, _ := config.DefaultPath()
+	flags := flag.NewFlagSet("source enable", flag.ContinueOnError)
+	flags.SetOutput(a.Stderr)
+	path := flags.String("config", defaultPath, "configuration path")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	adapter := postgres.New(nil, options, postgres.Credential{Password: string(credential)})
-	return adapter.Validate(ctx, source.Definition{
-		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
-	})
+	if flags.NArg() != 1 {
+		return errors.New("usage: quackridge source <enable|disable> <source-id>")
+	}
+	mutation := config.Mutation{Operation: "set_enabled", SourceID: flags.Arg(0), Enabled: enabled, CredentialAction: config.CredentialNone}
+	if err := a.applySourceMutation(context.Background(), *path, mutation, connectors.NewWithCertificates(certificateStore(*path))); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(a.Stdout).Encode(map[string]any{"ok": true, "source_id": flags.Arg(0), "enabled": enabled})
+	}
+	fmt.Fprintf(a.Stdout, "source %s enabled=%t\n", flags.Arg(0), enabled)
+	return nil
 }
 
-type mysqlValidator struct{}
-
-func (mysqlValidator) Validate(ctx context.Context, configured config.Source, credential []byte) error {
-	var options mysql.Config
-	if err := json.Unmarshal(configured.Options, &options); err != nil {
-		return err
+func (a *App) applySourceMutation(ctx context.Context, path string, mutation config.Mutation, validator config.Validator, provided ...secrets.Store) error {
+	defaultConfig, _ := config.DefaultPath()
+	defaultControl, _ := control.DefaultAddress()
+	isDefault := filepath.Clean(path) == filepath.Clean(defaultConfig)
+	if isDefault {
+		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+		response, probeErr := control.Call(probeCtx, defaultControl, control.Request{Operation: "handshake"})
+		cancel()
+		if probeErr == nil && response.OK {
+			payload, err := json.Marshal(mutation)
+			if err != nil {
+				return err
+			}
+			response, err = control.Call(ctx, defaultControl, control.Request{Operation: "source_" + mutation.Operation, Payload: payload})
+			if err != nil {
+				return err
+			}
+			if !response.OK {
+				return responseError(response)
+			}
+			return nil
+		}
+		if control.EndpointPresent(defaultControl) {
+			return &quackridge.Error{Code: quackridge.CodeIncompatible, Message: "a live daemon does not support this management protocol"}
+		}
 	}
-	return mysql.New(nil, options, mysql.Credential{Password: string(credential)}).Validate(ctx, source.Definition{
-		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
-	})
+	var credentialStore secrets.Store
+	if len(provided) > 0 {
+		credentialStore = provided[0]
+	}
+	if credentialStore == nil && mutation.CredentialAction != config.CredentialNone && !(mutation.Operation == "test" && mutation.CredentialAction == config.CredentialReplace) {
+		var err error
+		credentialStore, err = secrets.NewSystemStore()
+		if err != nil {
+			return err
+		}
+	}
+	service := config.TransactionalService{Store: config.Store{Path: path}, Credentials: credentialStore, Validator: validator}
+	if isDefault {
+		service.AfterLock = func(context.Context) error {
+			if control.EndpointPresent(defaultControl) {
+				return &quackridge.Error{Code: quackridge.CodeConflict, Message: "daemon started while preparing the offline mutation; retry through management IPC"}
+			}
+			return nil
+		}
+	}
+	_, _, err := service.Apply(ctx, mutation)
+	return err
 }
 
-type fileValidator struct{ connector string }
-
-func (v fileValidator) Validate(ctx context.Context, configured config.Source, _ []byte) error {
-	var options filedb.Config
-	if err := json.Unmarshal(configured.Options, &options); err != nil {
-		return err
+func responseError(response control.Response) error {
+	if response.Error != nil {
+		return &quackridge.Error{Code: response.Error.Code, Message: response.Error.Message}
 	}
-	return filedb.New(nil, v.connector, options).Validate(ctx, source.Definition{
-		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
-	})
-}
-
-type odbcValidator struct{}
-
-func (odbcValidator) Validate(ctx context.Context, configured config.Source, credential []byte) error {
-	var options odbc.Config
-	if err := json.Unmarshal(configured.Options, &options); err != nil {
-		return err
-	}
-	decoded, err := odbc.DecodeCredential(credential)
-	if err != nil {
-		return err
-	}
-	return odbc.New(nil, options, decoded).Validate(ctx, source.Definition{
-		ID: configured.ID, Name: configured.Name, Alias: configured.Alias,
-		ConnectorType: configured.Type, DatabaseType: configured.DatabaseType, Enabled: configured.Enabled,
-	})
+	return &quackridge.Error{Code: response.ErrorCode, Message: response.Message}
 }
 
 func (a *App) readPassword(fromStdin bool) ([]byte, error) {
@@ -409,8 +587,8 @@ func (a *App) sourceRemove(args []string) error {
 			break
 		}
 	}
-	service := config.Service{Store: config.Store{Path: *path}, Credentials: credentialStore}
-	if err := service.Remove(context.Background(), flags.Arg(0)); err != nil {
+	mutation := config.Mutation{Operation: "remove", SourceID: flags.Arg(0), CredentialAction: config.CredentialNone}
+	if err := a.applySourceMutation(context.Background(), *path, mutation, connectors.New(), credentialStore); err != nil {
 		return err
 	}
 	if *jsonOutput {
@@ -429,6 +607,9 @@ func (a *App) serve(args []string) error {
 	extensions := flags.String("extensions", os.Getenv("QUACKRIDGE_EXTENSION_DIR"), "verified extension directory")
 	controlAddress := flags.String("control", defaultControl, "control endpoint")
 	credentialProvider := flags.String("credential-provider", "system", "system or environment")
+	eventSocket := flags.String("event-socket", "", "private app lifecycle event endpoint")
+	lifecycleFD := flags.Int("lifecycle-fd", -1, "inherited parent lifecycle descriptor")
+	startupTimeout := flags.Duration("startup-timeout", 60*time.Second, "maximum startup duration")
 	jsonOutput := flags.Bool("json", false, "emit JSON readiness")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -446,6 +627,9 @@ func (a *App) serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *startupTimeout <= 0 || *startupTimeout > 5*time.Minute {
+		return errors.New("startup timeout must be between zero and five minutes")
+	}
 	runtime, err := app.New(app.StoreLoader{Store: config.Store{Path: *configPath}}, credentialStore)
 	if err != nil {
 		return err
@@ -458,16 +642,65 @@ func (a *App) serve(args []string) error {
 		ctx, stopSignals = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	}
 	defer stopSignals()
-	if err := service.Start(ctx, quackridge.Options{ExtensionDir: *extensions, Logger: logger}); err != nil {
+	ctx, cancelLifecycle, err := lifecycle.ParentContext(ctx, *lifecycleFD)
+	if err != nil {
 		return err
 	}
-	daemonBackend := &daemon{service: service, runtime: runtime, config: config.Store{Path: *configPath}}
+	defer cancelLifecycle()
+	eventCtx, cancelEvent := context.WithTimeout(ctx, 5*time.Second)
+	emitter, err := lifecycle.Connect(eventCtx, *eventSocket)
+	cancelEvent()
+	if err != nil {
+		return &quackridge.Error{Code: quackridge.CodeUnavailableHost, Message: "connect private lifecycle channel failed", Cause: err}
+	}
+	defer emitter.Close()
+	store := config.Store{Path: *configPath}
+	certificates := certificateStore(*configPath)
+	startupManager := config.TransactionalService{Store: store, Credentials: credentialStore, Validator: connectors.NewWithCertificates(certificates)}
+	startupGuard, err := startupManager.AcquireStartup(ctx)
+	if err != nil {
+		return err
+	}
+	guardHeld := true
+	defer func() {
+		if guardHeld {
+			_ = startupGuard.Close()
+		}
+	}()
+	_ = emitter.Send(lifecycle.Event{Type: "progress", Phase: "starting_engine"})
+	startupCtx, cancelStartup := context.WithTimeout(ctx, *startupTimeout)
+	err = service.Start(startupCtx, quackridge.Options{ExtensionDir: *extensions, Logger: logger})
+	cancelStartup()
+	if err != nil {
+		_ = emitter.Send(lifecycle.Event{Type: "failure", Phase: "starting_engine", Code: string(quackridge.ClassifyError(err).(*quackridge.Error).Code), Message: "backend startup failed"})
+		return err
+	}
+	_ = emitter.Send(lifecycle.Event{Type: "progress", Phase: "publishing_control"})
+	startupManager.Runtime = service
+	daemonBackend := &daemon{service: service, runtime: runtime, config: store, certificates: certificates,
+		manager: startupManager}
 	controlServer, err := control.Start(*controlAddress, daemonBackend)
 	if err != nil {
 		_ = service.Stop(context.Background())
 		return err
 	}
+	if err := startupGuard.Close(); err != nil {
+		_ = controlServer.Close()
+		_ = service.Stop(context.Background())
+		return err
+	}
+	guardHeld = false
 	status := service.Status()
+	daemonInstanceID, pairingGeneration := controlServer.Identity()
+	if err := emitter.Send(lifecycle.Event{Type: "readiness", Readiness: &lifecycle.Readiness{
+		PID: os.Getpid(), DaemonInstanceID: daemonInstanceID, PairingGeneration: pairingGeneration,
+		LifecycleState: string(status.State), Endpoint: status.Endpoint, ControlPath: *controlAddress,
+		ProductVersion: quackridge.Version, ManagementProtocolVersion: control.Version,
+	}}); err != nil {
+		_ = controlServer.Close()
+		_ = service.Stop(context.Background())
+		return err
+	}
 	if *jsonOutput {
 		_ = json.NewEncoder(a.Stdout).Encode(status)
 	} else {

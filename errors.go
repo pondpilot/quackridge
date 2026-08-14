@@ -19,6 +19,16 @@ const (
 	CodeTimeout           ErrorCode = "QR_TIMEOUT"
 	CodeResourceExhausted ErrorCode = "QR_RESOURCE_EXHAUSTED"
 	CodeInternal          ErrorCode = "QR_INTERNAL"
+	CodeValidation        ErrorCode = "QR_VALIDATION"
+	CodeKeychainDenied    ErrorCode = "QR_KEYCHAIN_DENIED"
+	CodeInteractionNeeded ErrorCode = "QR_INTERACTION_REQUIRED"
+	CodeUnavailableHost   ErrorCode = "QR_UNAVAILABLE_HOST"
+	CodeTLSFailure        ErrorCode = "QR_TLS_FAILURE"
+	CodeConflict          ErrorCode = "QR_CONFLICT"
+	CodeExtensionMismatch ErrorCode = "QR_EXTENSION_MISMATCH"
+	CodeStaleSocket       ErrorCode = "QR_STALE_SOCKET"
+	CodeIncompatible      ErrorCode = "QR_INCOMPATIBLE_PROTOCOL"
+	CodePairingExpired    ErrorCode = "QR_PAIRING_EXPIRED"
 )
 
 // Error carries a stable code while keeping internal details out of its public
