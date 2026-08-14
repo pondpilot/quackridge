@@ -17,6 +17,10 @@ optional live checks that could not run.
 | Pairing rejected | Generate a new challenge, use the exact one-time code before expiry, and pair from the allowed PondPilot origin. |
 | PondPilot disconnects after rotation | Pair again. Token rotation intentionally invalidates existing attachments. |
 | Query timed out but server remains busy | v0.1 advertises `cancellation_noop`; wait for limits to stop the work or restart QuackRidge after assessing other active queries. |
+| App reports bundle verification failure | Replace the complete app from one verified release. Do not modify or replace its helper or bundled extensions. |
+| App cannot start its backend | Quit other QuackRidge instances, inspect Diagnostics, and confirm the app can write its per-user Application Support directory. An incompatible live endpoint is never unlinked automatically. |
+| Launch at Login needs approval | Open macOS System Settings → General → Login Items, approve QuackRidge, then reopen app Settings. |
+| ODBC works in Terminal but not the app | Confirm the driver uses an absolute configured path and works without shell-only `PATH`, `DYLD_*`, or other environment variables. External ODBC drivers are not bundled. |
 
 ## Diagnostics and privacy
 

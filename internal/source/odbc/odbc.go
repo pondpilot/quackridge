@@ -1,16 +1,20 @@
 package odbc
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
 	"github.com/pondpilot/quackridge/internal/engine"
+	"github.com/pondpilot/quackridge/internal/odbcprops"
 	"github.com/pondpilot/quackridge/internal/source"
 )
 
@@ -22,8 +26,9 @@ type Config struct {
 }
 
 type Credential struct {
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Username         string            `json:"username,omitempty"`
+	Password         string            `json:"password,omitempty"`
+	SecureProperties map[string]string `json:"secure_properties,omitempty"`
 }
 
 func DecodeCredential(raw []byte) (Credential, error) {
@@ -31,8 +36,14 @@ func DecodeCredential(raw []byte) (Credential, error) {
 		return Credential{}, nil
 	}
 	var credential Credential
-	if err := json.Unmarshal(raw, &credential); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&credential); err != nil {
 		return Credential{}, fmt.Errorf("ODBC credential must contain username and password JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Credential{}, fmt.Errorf("ODBC credential must contain one JSON object")
 	}
 	return credential, nil
 }
@@ -75,16 +86,32 @@ func (a *Adapter) Validate(_ context.Context, definition source.Definition) erro
 	default:
 		return fmt.Errorf("ODBC database_type is unsupported")
 	}
+	propertyNames := make(map[string]string, len(a.config.Properties)+len(a.credential.SecureProperties))
 	for key := range a.config.Properties {
 		if !validPropertyKey(key) {
 			return fmt.Errorf("ODBC property is invalid")
 		}
-		upper := strings.ToUpper(strings.TrimSpace(key))
-		if upper == "UID" || upper == "USER" || upper == "PWD" || upper == "PASSWORD" ||
-			strings.Contains(upper, "PASS") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN") ||
-			strings.Contains(upper, "CREDENTIAL") || strings.ContainsAny(key, ";{}") {
-			return fmt.Errorf("ODBC property is invalid")
+		if !PublicPropertyAllowed(a.databaseType(), key) {
+			return fmt.Errorf("ODBC property must use the secure credential input")
 		}
+		normalized := strings.ToUpper(strings.TrimSpace(key))
+		if _, exists := propertyNames[normalized]; exists {
+			return fmt.Errorf("ODBC property names must be unique ignoring case")
+		}
+		propertyNames[normalized] = "public"
+	}
+	for key := range a.credential.SecureProperties {
+		if !validPropertyKey(key) {
+			return fmt.Errorf("ODBC secure property is invalid")
+		}
+		normalized := strings.ToUpper(strings.TrimSpace(key))
+		if kind, exists := propertyNames[normalized]; exists && kind == "public" {
+			return fmt.Errorf("ODBC property cannot be both public and secure")
+		}
+		if _, exists := propertyNames[normalized]; exists {
+			return fmt.Errorf("ODBC secure property names must be unique ignoring case")
+		}
+		propertyNames[normalized] = "secure"
 	}
 	return nil
 }
@@ -105,6 +132,10 @@ func validPropertyKey(value string) bool {
 		return false
 	}
 	return true
+}
+
+func PublicPropertyAllowed(databaseType, key string) bool {
+	return odbcprops.PublicAllowed(databaseType, key)
 }
 
 func (a *Adapter) Attach(ctx context.Context, definition source.Definition) error {
@@ -183,19 +214,26 @@ func (a *Adapter) remoteName(schema, name string) string {
 }
 
 func (a *Adapter) connectionString() string {
-	parts := make([]string, 0, len(a.config.Properties)+1)
+	properties := make(map[string]string, len(a.config.Properties)+len(a.credential.SecureProperties))
+	for key, value := range a.config.Properties {
+		properties[key] = value
+	}
+	for key, value := range a.credential.SecureProperties {
+		properties[key] = value
+	}
+	parts := make([]string, 0, len(properties)+1)
 	if a.config.DSN != "" {
 		parts = append(parts, "DSN={"+escape(a.config.DSN)+"}")
 	} else {
 		parts = append(parts, "Driver={"+escape(a.config.Driver)+"}")
 	}
-	keys := make([]string, 0, len(a.config.Properties))
-	for key := range a.config.Properties {
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		parts = append(parts, key+"="+connectionValue(a.config.Properties[key]))
+		parts = append(parts, key+"="+connectionValue(properties[key]))
 	}
 	return strings.Join(parts, ";")
 }

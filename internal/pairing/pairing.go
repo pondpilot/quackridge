@@ -42,6 +42,7 @@ type Server struct {
 	nonce     string
 	expiresAt time.Time
 	consumed  bool
+	state     string
 	origins   []string
 	response  Response
 	listener  net.Listener
@@ -74,6 +75,7 @@ func Start(options Options) (*Server, Challenge, error) {
 		nonce: nonce, expiresAt: expiresAt, origins: slices.Clone(options.Origins), listener: listener,
 		done:     make(chan struct{}),
 		response: Response{Endpoint: options.Endpoint, Token: options.Token, Identity: protocol.CurrentIdentity()},
+		state:    "waiting",
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/pair", server.handle)
@@ -90,6 +92,11 @@ func Start(options Options) (*Server, Challenge, error) {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
+			server.mu.Lock()
+			if server.state == "waiting" {
+				server.state = "expired"
+			}
+			server.mu.Unlock()
 			_ = server.Close()
 		case <-server.done:
 		}
@@ -148,6 +155,7 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 		return
 	default:
 		s.consumed = true
+		s.state = "consumed"
 	}
 	s.mu.Unlock()
 	writer.Header().Set("Content-Type", "application/json")
@@ -156,6 +164,11 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) Close() error {
+	s.mu.Lock()
+	if s.state == "waiting" {
+		s.state = "cancelled"
+	}
+	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err := s.http.Shutdown(ctx)
@@ -165,6 +178,11 @@ func (s *Server) Close() error {
 
 func (s *Server) finish()               { s.once.Do(func() { close(s.done) }) }
 func (s *Server) Done() <-chan struct{} { return s.done }
+func (s *Server) Status() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
 
 func randomNonce() (string, error) {
 	value := make([]byte, 32)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,37 +15,56 @@ import (
 	"time"
 
 	quackridge "github.com/pondpilot/quackridge"
+	"github.com/pondpilot/quackridge/internal/certstore"
 	"github.com/pondpilot/quackridge/internal/config"
 	"github.com/pondpilot/quackridge/internal/engine"
 	"github.com/pondpilot/quackridge/internal/reconcile"
 	"github.com/pondpilot/quackridge/internal/secrets"
+	"github.com/pondpilot/quackridge/internal/source"
 )
 
 type Runtime struct {
-	mu        sync.RWMutex
-	engine    *engine.Runtime
-	manager   *reconcile.Manager
-	failures  []quackridge.SourceStatus
-	logger    *slog.Logger
-	loader    reconcile.Loader
-	secrets   secrets.Store
-	options   quackridge.Options
-	basePaths []string
-	document  config.Document
+	mu               sync.RWMutex
+	engine           *engine.Runtime
+	manager          *reconcile.Manager
+	failures         []quackridge.SourceStatus
+	logger           *slog.Logger
+	loader           reconcile.Loader
+	secrets          secrets.Store
+	options          quackridge.Options
+	basePaths        []string
+	document         config.Document
+	health           map[string]healthSnapshot
+	healthCancel     context.CancelFunc
+	healthGeneration uint64
+	backoff          *source.Backoff
+	certificates     *certstore.Store
+}
+
+type healthSnapshot struct {
+	health  string
+	checked time.Time
+	retry   *time.Time
 }
 
 func New(loader reconcile.Loader, credentialStore secrets.Store) (*Runtime, error) {
 	engineRuntime := engine.New()
-	manager, err := newManager(loader, credentialStore, engineRuntime)
+	var certificates *certstore.Store
+	if configured, ok := loader.(StoreLoader); ok {
+		store := certstore.Store{Root: filepath.Join(filepath.Dir(configured.Store.Path), "state-v2", "certificates")}
+		certificates = &store
+	}
+	manager, err := newManager(loader, credentialStore, engineRuntime, certificates)
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{engine: engineRuntime, manager: manager, loader: loader, secrets: credentialStore}, nil
+	return &Runtime{engine: engineRuntime, manager: manager, loader: loader, secrets: credentialStore,
+		health: make(map[string]healthSnapshot), backoff: source.NewBackoff(5*time.Second, 5*time.Minute), certificates: certificates}, nil
 }
 
-func newManager(loader reconcile.Loader, credentialStore secrets.Store, engineRuntime *engine.Runtime) (*reconcile.Manager, error) {
+func newManager(loader reconcile.Loader, credentialStore secrets.Store, engineRuntime *engine.Runtime, certificates reconcile.RootCertificateResolver) (*reconcile.Manager, error) {
 	return reconcile.New(loader, credentialStore,
-		reconcile.PostgresFactory{Attacher: engineRuntime},
+		reconcile.PostgresFactory{Attacher: engineRuntime, Certificates: certificates},
 		reconcile.MySQLFactory{Attacher: engineRuntime},
 		reconcile.FileFactory{Connector: "sqlite", Attacher: engineRuntime},
 		reconcile.FileFactory{Connector: "duckdb", Attacher: engineRuntime},
@@ -81,19 +101,21 @@ func (r *Runtime) Start(ctx context.Context, options quackridge.Options) (string
 	for _, failure := range failures {
 		r.failures = append(r.failures, quackridge.SourceStatus{
 			ID: failure.ID, Name: failure.Name, Type: failure.Type,
-			Health: "unavailable", ErrorCode: string(quackridge.CodeSourceUnavailable),
+			Health: "unavailable", Enabled: true, ErrorCode: string(quackridge.CodeSourceUnavailable),
 		})
 		if r.logger != nil {
 			r.logger.Warn("source unavailable", "component", "source", "source_id", failure.ID,
 				"source_type", failure.Type, "error_code", quackridge.CodeSourceUnavailable)
 		}
 	}
+	r.startHealthSchedulerLocked()
 	return endpoint, nil
 }
 
 func (r *Runtime) Reload(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.healthGeneration++
 	document, err := r.loader.Load()
 	if err != nil {
 		return err
@@ -110,6 +132,7 @@ func (r *Runtime) Reload(ctx context.Context) error {
 	}
 	r.failures = nil
 	r.document = document.Clone()
+	r.pruneHealthLocked(document)
 	return nil
 }
 
@@ -123,7 +146,7 @@ func (r *Runtime) rebuild(ctx context.Context, document config.Document, allowed
 	options.AllowedPaths = allowedPaths
 
 	probeEngine := engine.New()
-	probeManager, err := newManager(r.loader, r.secrets, probeEngine)
+	probeManager, err := newManager(r.loader, r.secrets, probeEngine, r.certificates)
 	if err != nil {
 		return err
 	}
@@ -146,7 +169,7 @@ func (r *Runtime) rebuild(ctx context.Context, document config.Document, allowed
 		return errors.Join(err, restoreErr)
 	}
 	replacement := engine.New()
-	replacementManager, err := newManager(r.loader, r.secrets, replacement)
+	replacementManager, err := newManager(r.loader, r.secrets, replacement, r.certificates)
 	if err != nil {
 		return err
 	}
@@ -170,7 +193,7 @@ func (r *Runtime) restore(document config.Document, options quackridge.Options) 
 	defer cancel()
 	restored := engine.New()
 	loader := documentLoader{document: document}
-	manager, err := newManager(loader, r.secrets, restored)
+	manager, err := newManager(loader, r.secrets, restored, r.certificates)
 	if err != nil {
 		return fmt.Errorf("restore previous engine: %w", err)
 	}
@@ -238,6 +261,11 @@ func endpointAddress(endpoint string) (string, int, error) {
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.healthCancel != nil {
+		r.healthCancel()
+		r.healthCancel = nil
+	}
+	r.healthGeneration++
 	err := r.engine.Stop(ctx)
 	r.failures = nil
 	return err
@@ -258,6 +286,21 @@ func (r *Runtime) sourcesLocked() []quackridge.SourceStatus {
 	for _, status := range r.failures {
 		byID[status.ID] = status
 	}
+	for id, current := range byID {
+		current.Enabled = sourceEnabled(r.document, id)
+		if health, ok := r.health[id]; ok {
+			current.Health = health.health
+			checked := health.checked
+			current.LastCheckAt = &checked
+			current.NextRetryAt = health.retry
+			if health.health == "ready" {
+				current.ErrorCode = ""
+			} else {
+				current.ErrorCode = string(quackridge.CodeSourceUnavailable)
+			}
+		}
+		byID[id] = current
+	}
 	sources = sources[:0]
 	for _, status := range byID {
 		sources = append(sources, status)
@@ -272,6 +315,103 @@ func (r *Runtime) sourcesLocked() []quackridge.SourceStatus {
 		return 0
 	})
 	return sources
+}
+
+func (r *Runtime) startHealthSchedulerLocked() {
+	if r.healthCancel != nil {
+		r.healthCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.healthCancel = cancel
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = r.probeHealth(ctx, "", false)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (r *Runtime) probeHealth(parent context.Context, requested string, force bool) error {
+	r.mu.RLock()
+	generation := r.healthGeneration
+	manager := r.manager
+	now := time.Now().UTC()
+	ids := make([]string, 0, len(r.document.Sources))
+	found := requested == ""
+	for _, configured := range r.document.Sources {
+		if configured.ID == requested {
+			found = true
+		}
+		if !configured.Enabled || requested != "" && configured.ID != requested {
+			continue
+		}
+		if health, ok := r.health[configured.ID]; !force && ok && health.retry != nil && now.Before(*health.retry) {
+			continue
+		}
+		ids = append(ids, configured.ID)
+	}
+	r.mu.RUnlock()
+	if !found {
+		return &quackridge.Error{Code: quackridge.CodeValidation, Message: "source was not found"}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	results := manager.DiagnosticsFor(ctx, ids...)
+	now = time.Now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if generation != r.healthGeneration {
+		return nil
+	}
+	for _, result := range results {
+		if result.Health == "ready" {
+			r.backoff.Ready(result.ID)
+			r.health[result.ID] = healthSnapshot{health: "ready", checked: now}
+		} else {
+			next := now.Add(r.backoff.Failure(result.ID))
+			r.health[result.ID] = healthSnapshot{health: "unavailable", checked: now, retry: &next}
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) RefreshSourceHealth(ctx context.Context, id string) error {
+	return r.probeHealth(ctx, id, true)
+}
+
+func (r *Runtime) pruneHealthLocked(document config.Document) {
+	for id := range r.health {
+		if !hasSource(document, id) {
+			delete(r.health, id)
+			r.backoff.Ready(id)
+		}
+	}
+}
+
+func hasSource(document config.Document, id string) bool {
+	for _, configured := range document.Sources {
+		if configured.ID == id {
+			return true
+		}
+	}
+	return false
+}
+func sourceEnabled(document config.Document, id string) bool {
+	for _, configured := range document.Sources {
+		if configured.ID == id {
+			return configured.Enabled
+		}
+	}
+	return false
 }
 
 func (r *Runtime) Token() string {

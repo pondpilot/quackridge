@@ -1,0 +1,1 @@
+{"version":2,"request_id":"fixture-status","ok":true,"status":{"state":"ready","endpoint":"quack:127.0.0.1:9494","sources":[],"capabilities":[]},"daemon_instance_id":"00112233445566778899aabbccddeeff","pairing_generation":"ffeeddccbbaa99887766554433221100"}

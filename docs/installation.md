@@ -26,6 +26,10 @@ repository can lag the GitHub release. QuackRidge v0.1 does not publish a
 Windows archive because DuckDB's Go/MinGW build cannot load the available MSVC
 extension bundle.
 
+The native app is a separate `quackridge-app` cask and DMG. It requires macOS
+13 or newer and includes the exact helper and extension set it manages. See the
+[macOS app guide](macos-app.md). The app has no in-app updater.
+
 ## Create a read-only PostgreSQL role
 
 Run the following as a PostgreSQL administrator, replacing the database, role,
@@ -70,6 +74,13 @@ never stored in the JSON configuration. SSL modes are `disable`, `allow`,
 `prefer`, `require`, `verify-ca`, and `verify-full`; production sources should
 use `verify-full` whenever possible.
 
+Import a private PostgreSQL CA before referring to it:
+
+```sh
+quackridge certificate import /path/to/company-postgres-ca.pem
+quackridge certificate list
+```
+
 MySQL uses the same host, port, database, user, password-input, and SSL flags:
 
 ```sh
@@ -97,6 +108,10 @@ the connection properties.
 quackridge source add odbc --id support --name Support --alias support \
   --dsn support --database-type sqlserver --user quackridge_reader --password-stdin
 ```
+
+Custom or authentication-bearing ODBC properties must be supplied as a JSON
+credential object through `--odbc-credential-stdin`; unknown properties are
+never allowed to fall through into plaintext configuration.
 
 ## Run, diagnose, and pair
 
@@ -132,3 +147,6 @@ release directory, and remove the `QuackRidge` configuration directory. Also
 remove the QuackRidge connection from PondPilot so its encrypted token record is
 deleted. QuackRidge v0.1 installs no service, daemon registration, kernel
 component, browser extension, or automatic updater.
+
+The macOS app can opt into a user Login Item. Disable it before removing the
+app. The app never removes an external compatible CLI process that it adopted.

@@ -55,6 +55,34 @@ func TestRejectsAmbiguousAndSecretBearingProperties(t *testing.T) {
 	}
 }
 
+func TestSecureUnknownPropertiesStayInCredential(t *testing.T) {
+	adapter := New(nil, Config{DSN: "support", DatabaseType: "sqlserver", Properties: map[string]string{"Encrypt": "yes"}},
+		Credential{SecureProperties: map[string]string{"AccessToken": "synthetic-secret", "VendorBlob": "opaque"}})
+	definition := source.Definition{ID: "support", Name: "Support", Alias: "support", ConnectorType: "odbc", DatabaseType: "sqlserver", Enabled: true}
+	if err := adapter.Validate(t.Context(), definition); err != nil {
+		t.Fatal(err)
+	}
+	connection := adapter.connectionString()
+	if !strings.Contains(connection, "AccessToken=synthetic-secret") || !strings.Contains(connection, "VendorBlob=opaque") {
+		t.Fatalf("connection = %q", connection)
+	}
+	if PublicPropertyAllowed("sqlserver", "AccessToken") {
+		t.Fatal("credential property was allowlisted as public")
+	}
+}
+
+func TestCredentialRejectsTrailingJSONAndCaseVariantProperties(t *testing.T) {
+	if _, err := DecodeCredential([]byte(`{"username":"reader"} {"password":"ignored"}`)); err == nil {
+		t.Fatal("trailing credential JSON was accepted")
+	}
+	adapter := New(nil, Config{DSN: "support", DatabaseType: "sqlserver", Properties: map[string]string{"Encrypt": "yes"}},
+		Credential{SecureProperties: map[string]string{"ENCRYPT": "no"}})
+	definition := source.Definition{ID: "support", Name: "Support", Alias: "support", ConnectorType: "odbc", DatabaseType: "sqlserver", Enabled: true}
+	if err := adapter.Validate(t.Context(), definition); err == nil {
+		t.Fatal("case-variant public and secure properties were accepted")
+	}
+}
+
 func TestReservedSchemasAreNotMaterialized(t *testing.T) {
 	tests := map[string][]string{
 		"postgres":  {"information_schema", "pg_catalog"},

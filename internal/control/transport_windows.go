@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"os/user"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 )
@@ -25,4 +26,15 @@ func listen(address string) (net.Listener, error) {
 
 func dial(ctx context.Context, address string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, address)
+}
+
+func EndpointPresent(address string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	connection, err := dial(ctx, address)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
 }
